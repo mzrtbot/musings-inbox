@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "musings-inbox"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local-first life-log / inspiration inbox for AI agents — plain Markdown, no vendor lock-in"
 readme = "README.md"
 license = { text = "MIT" }

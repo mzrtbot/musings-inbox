@@ -1,5 +1,7 @@
 # musings-inbox
 
+[![CI](https://github.com/mzrtbot/musings-inbox/actions/workflows/ci.yml/badge.svg)](https://github.com/mzrtbot/musings-inbox/actions/workflows/ci.yml)
+
 **A local-first life-log ("inspiration inbox") for AI agents — plain Markdown files, no vendor lock-in.**
 
 You say one trigger word to your agent — `Musings:` in English, `随想：` in Chinese — and it files the thought away: classified, timestamped from a real clock read, indexed, and verifiable months later. When you ask a question, the agent answers from *your own recorded history*, not from a cloud profile you cannot inspect.
