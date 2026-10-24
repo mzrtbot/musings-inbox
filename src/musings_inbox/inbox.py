@@ -21,6 +21,9 @@ CATEGORIES = {
     "material": "materials.md",
 }
 INDEX_NAME = "index.md"
+# Lines written by Inbox.add, e.g.:
+# - [20261023-01] 2026-10-23 09:30 — The workshop opens at nine.
+_ENTRY_LINE = re.compile(r"^-\s\[(\d{8}-\d+)\]\s(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2})\s—\s(.*)$")
 
 
 def _md5(path: Path) -> str:
@@ -97,6 +100,40 @@ class Inbox:
             fh.write(f"| {entry_id} | {timestamp} | {category} | {summary} |\n")
         return Entry(entry_id, category, text, timestamp)
 
+    def list_entries(self, category: str | None = None, on_date: str | None = None) -> list[Entry]:
+        """List entries, optionally filtered by category and/or date.
+
+        ``category`` must be one of the known categories; ``on_date`` must
+        be ``YYYY-MM-DD`` and matches the date part of the entry timestamp.
+        Entries are returned in chronological order (timestamp, then ID),
+        so listing is stable regardless of which category file they live in.
+        Non-entry lines (headers, hand-written notes) are skipped, never
+        treated as entries.
+        """
+        if category is not None and category not in CATEGORIES:
+            raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
+        if on_date is not None:
+            try:
+                datetime.strptime(on_date, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError(f"invalid date: {on_date!r} (expected YYYY-MM-DD)") from None
+        categories = [category] if category is not None else list(CATEGORIES)
+        entries: list[Entry] = []
+        for cat in categories:
+            p = self.root / CATEGORIES[cat]
+            if not p.exists():
+                continue
+            for ln in p.read_text(encoding="utf-8").splitlines():
+                match = _ENTRY_LINE.match(ln)
+                if match is None:
+                    continue
+                entry_id, timestamp, text = match.groups()
+                if on_date is not None and not timestamp.startswith(on_date):
+                    continue
+                entries.append(Entry(entry_id, cat, text, timestamp))
+        entries.sort(key=lambda e: (e.timestamp, e.entry_id))
+        return entries
+
     def search(self, query: str) -> list[str]:
         hits: list[str] = []
         for filename in CATEGORIES.values():
@@ -136,6 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     p_add.add_argument("--text", required=True)
     p_search = sub.add_parser("search")
     p_search.add_argument("query")
+    p_list = sub.add_parser("list", help="list entries, optionally filtered by category and/or date")
+    p_list.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
+    p_list.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")
     sub.add_parser("verify")
     args = ap.parse_args(argv)
     inbox = Inbox(args.root)
@@ -149,6 +189,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "search":
             hits = inbox.search(args.query)
             print("\n".join(hits) if hits else "no matches")
+        elif args.cmd == "list":
+            entries = inbox.list_entries(category=args.category, on_date=args.on_date)
+            if entries:
+                for entry in entries:
+                    print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
+            else:
+                print("no entries")
         elif args.cmd == "verify":
             for name, digest in inbox.verify().items():
                 print(f"{name} {digest}")

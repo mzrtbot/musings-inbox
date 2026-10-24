@@ -48,6 +48,59 @@ def test_verify_detects_index_mismatch(tmp_path):
     raise AssertionError("verify() should have raised on mismatch")
 
 
+def test_list_all_and_by_category(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "The workshop opens at nine.", now=NOW)
+    box.add("preference", "Quiet mornings.", now=NOW)
+    box.add("experience", "Fixed a glued index line.", now=NOW)
+    all_entries = box.list_entries()
+    assert [(e.entry_id, e.category) for e in all_entries] == [
+        ("20261023-01", "fact"),
+        ("20261023-02", "preference"),
+        ("20261023-03", "experience"),
+    ]
+    facts = box.list_entries(category="fact")
+    assert len(facts) == 1 and facts[0].text == "The workshop opens at nine."
+    assert box.list_entries(category="material") == []
+
+
+def test_list_by_date_and_chronological_order(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "First day note.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("fact", "Second day note.", now=datetime(2026, 10, 23, 9, 0))
+    box.add("preference", "Second day preference.", now=datetime(2026, 10, 23, 8, 0))
+    day23 = box.list_entries(on_date="2026-10-23")
+    # Chronological, not file order: the 08:00 preference comes first.
+    assert [e.entry_id for e in day23] == ["20261023-02", "20261023-01"]
+    assert box.list_entries(on_date="2026-10-24") == []
+    combined = box.list_entries(category="fact", on_date="2026-10-23")
+    assert [e.text for e in combined] == ["Second day note."]
+
+
+def test_list_rejects_bad_category_and_date(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "Something listable.", now=NOW)
+    for bad_category, bad_date in [("diary", None), (None, "23-10-2026"), (None, "2026-13-01")]:
+        try:
+            box.list_entries(category=bad_category, on_date=bad_date)
+        except ValueError:
+            continue
+        raise AssertionError(f"should reject {bad_category=} {bad_date=}")
+
+
+def test_list_cli_prints_entries_and_empty(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "list"]) == 0
+    assert capsys.readouterr().out.strip() == "no entries"
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "CLI-listed entry.", now=NOW)
+    assert main(["--root", root, "list", "--category", "fact"]) == 0
+    out = capsys.readouterr().out
+    assert "20261023-01 2026-10-23 09:30 [fact] CLI-listed entry." in out
+
+
 def test_rejects_empty_and_unknown(tmp_path):
     box = Inbox(tmp_path / "inbox")
     for bad in [("fact", "  "), ("diary", "hello")]:

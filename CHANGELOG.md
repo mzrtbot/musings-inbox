@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow SemVer.
 
+## [Unreleased]
+
+### Added
+- `list` command: list entries, optionally filtered by `--category` and/or `--date` (YYYY-MM-DD), in chronological order; non-entry lines are skipped.
+
 ## [0.1.1] - 2026-10-23
 
 ### Added
