@@ -7,6 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ### Added
 - `list` command: list entries, optionally filtered by `--category` and/or `--date` (YYYY-MM-DD), in chronological order; non-entry lines are skipped.
+- `stats` command: total entries, per-category counts (all four categories, zero when empty), earliest/latest entries in chronological order, and total entry-text characters; empty inboxes report `earliest: none` / `latest: none`.
 
 ## [0.1.1] - 2026-10-23
 

@@ -59,6 +59,15 @@ class Entry:
     timestamp: str
 
 
+@dataclass
+class Stats:
+    total: int
+    by_category: dict[str, int]
+    earliest: Entry | None
+    latest: Entry | None
+    total_chars: int
+
+
 class Inbox:
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -134,6 +143,28 @@ class Inbox:
         entries.sort(key=lambda e: (e.timestamp, e.entry_id))
         return entries
 
+    def stats(self) -> Stats:
+        """Summarize the inbox: per-category counts, earliest/latest
+        entries, and total entry-text characters.
+
+        ``by_category`` always lists every known category (zero when
+        empty) so callers can rely on the keys. ``earliest``/``latest``
+        use the same chronological order as :meth:`list_entries` and
+        are ``None`` for an empty inbox. ``total_chars`` counts entry
+        text only, not IDs, timestamps, or Markdown markup.
+        """
+        entries = self.list_entries()
+        by_category = {cat: 0 for cat in CATEGORIES}
+        for entry in entries:
+            by_category[entry.category] += 1
+        return Stats(
+            total=len(entries),
+            by_category=by_category,
+            earliest=entries[0] if entries else None,
+            latest=entries[-1] if entries else None,
+            total_chars=sum(len(entry.text) for entry in entries),
+        )
+
     def search(self, query: str) -> list[str]:
         hits: list[str] = []
         for filename in CATEGORIES.values():
@@ -176,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     p_list = sub.add_parser("list", help="list entries, optionally filtered by category and/or date")
     p_list.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
     p_list.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")
+    sub.add_parser("stats", help="show per-category counts, earliest/latest entries, total characters")
     sub.add_parser("verify")
     args = ap.parse_args(argv)
     inbox = Inbox(args.root)
@@ -196,6 +228,22 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
             else:
                 print("no entries")
+        elif args.cmd == "stats":
+            stats = inbox.stats()
+            print(f"total: {stats.total}")
+            for cat in CATEGORIES:
+                print(f"{cat}: {stats.by_category[cat]}")
+            if stats.earliest is not None:
+                e = stats.earliest
+                print(f"earliest: {e.entry_id} {e.timestamp} [{e.category}] {e.text}")
+            else:
+                print("earliest: none")
+            if stats.latest is not None:
+                e = stats.latest
+                print(f"latest: {e.entry_id} {e.timestamp} [{e.category}] {e.text}")
+            else:
+                print("latest: none")
+            print(f"total characters: {stats.total_chars}")
         elif args.cmd == "verify":
             for name, digest in inbox.verify().items():
                 print(f"{name} {digest}")

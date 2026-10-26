@@ -101,6 +101,47 @@ def test_list_cli_prints_entries_and_empty(tmp_path, capsys):
     assert "20261023-01 2026-10-23 09:30 [fact] CLI-listed entry." in out
 
 
+def test_stats_counts_earliest_latest_and_total_chars(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "First day note.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("fact", "Second day note.", now=datetime(2026, 10, 23, 9, 0))
+    box.add("preference", "Second day preference.", now=datetime(2026, 10, 23, 8, 0))
+    stats = box.stats()
+    assert stats.total == 3
+    assert stats.by_category == {"fact": 2, "preference": 1, "experience": 0, "material": 0}
+    # Chronological: the 08:00 preference is earliest, the 09:00 fact latest.
+    assert stats.earliest.entry_id == "20261022-01"
+    assert stats.latest.entry_id == "20261023-01"
+    assert stats.total_chars == 15 + 16 + 22
+
+
+def test_stats_empty_inbox(tmp_path):
+    stats = Inbox(tmp_path / "inbox").stats()
+    assert stats.total == 0
+    assert stats.by_category == {"fact": 0, "preference": 0, "experience": 0, "material": 0}
+    assert stats.earliest is None and stats.latest is None
+    assert stats.total_chars == 0
+
+
+def test_stats_cli_prints_summary_and_empty(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "stats"]) == 0
+    out = capsys.readouterr().out
+    assert "total: 0" in out
+    assert "earliest: none" in out and "latest: none" in out
+    assert "total characters: 0" in out
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "CLI-counted entry.", now=NOW)
+    assert main(["--root", root, "stats"]) == 0
+    out = capsys.readouterr().out
+    assert "total: 1" in out and "fact: 1" in out and "preference: 0" in out
+    assert "earliest: 20261023-01 2026-10-23 09:30 [fact] CLI-counted entry." in out
+    assert "latest: 20261023-01 2026-10-23 09:30 [fact] CLI-counted entry." in out
+    assert "total characters: 18" in out
+
+
 def test_rejects_empty_and_unknown(tmp_path):
     box = Inbox(tmp_path / "inbox")
     for bad in [("fact", "  "), ("diary", "hello")]:
