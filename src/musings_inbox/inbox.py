@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import sys
 from dataclasses import dataclass
@@ -165,6 +166,45 @@ class Inbox:
             total_chars=sum(len(entry.text) for entry in entries),
         )
 
+    def export(
+        self,
+        format: str = "markdown",
+        category: str | None = None,
+        on_date: str | None = None,
+    ) -> str:
+        """Export the inbox as one Markdown document or one JSON array.
+
+        ``format`` is ``markdown`` (default) or ``json``. The same
+        ``category`` / ``on_date`` filters as :meth:`list_entries` apply,
+        so callers get the same validation and chronological order.
+        Markdown is one document with a header, a total line, and one
+        ``- [ID] timestamp [category] text`` line per entry; JSON is a
+        list of ``entry_id`` / ``category`` / ``text`` / ``timestamp``
+        objects. An empty inbox exports as a Markdown header with
+        ``no entries`` or as ``[]`` — never as an error.
+        """
+        if format not in ("markdown", "json"):
+            raise ValueError(f"unknown export format: {format!r} (choose from markdown, json)")
+        entries = self.list_entries(category=category, on_date=on_date)
+        if format == "json":
+            payload = [
+                {
+                    "entry_id": e.entry_id,
+                    "category": e.category,
+                    "text": e.text,
+                    "timestamp": e.timestamp,
+                }
+                for e in entries
+            ]
+            return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        lines = ["# Export", "", f"total: {len(entries)}", ""]
+        if entries:
+            for e in entries:
+                lines.append(f"- [{e.entry_id}] {e.timestamp} [{e.category}] {e.text}")
+        else:
+            lines.append("no entries")
+        return "\n".join(lines) + "\n"
+
     def search(self, query: str) -> list[str]:
         hits: list[str] = []
         for filename in CATEGORIES.values():
@@ -208,6 +248,13 @@ def main(argv: list[str] | None = None) -> int:
     p_list.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
     p_list.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")
     sub.add_parser("stats", help="show per-category counts, earliest/latest entries, total characters")
+    p_export = sub.add_parser("export", help="export the inbox as one Markdown document or JSON array")
+    p_export.add_argument("--format", dest="format", default="markdown", choices=["markdown", "json"],
+                          help="output format (default: markdown)")
+    p_export.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
+    p_export.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")
+    p_export.add_argument("--output", dest="output", default=None,
+                          help="write to this file instead of stdout")
     sub.add_parser("verify")
     args = ap.parse_args(argv)
     inbox = Inbox(args.root)
@@ -244,6 +291,16 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("latest: none")
             print(f"total characters: {stats.total_chars}")
+        elif args.cmd == "export":
+            text = inbox.export(format=args.format, category=args.category, on_date=args.on_date)
+            if args.output is not None:
+                out_path = Path(args.output)
+                if out_path.parent != Path("."):
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(text, encoding="utf-8")
+                print(f"exported: {out_path}")
+            else:
+                sys.stdout.write(text)
         elif args.cmd == "verify":
             for name, digest in inbox.verify().items():
                 print(f"{name} {digest}")

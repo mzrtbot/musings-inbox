@@ -142,6 +142,70 @@ def test_stats_cli_prints_summary_and_empty(tmp_path, capsys):
     assert "total characters: 18" in out
 
 
+def test_export_markdown_chronological_and_filtered(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "First day note.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("fact", "Second day note.", now=datetime(2026, 10, 23, 9, 0))
+    box.add("preference", "Second day preference.", now=datetime(2026, 10, 23, 8, 0))
+    doc = box.export()
+    assert doc.startswith("# Export\n\ntotal: 3\n")
+    # Chronological, not file order: the 08:00 preference comes first.
+    lines = [ln for ln in doc.splitlines() if ln.startswith("- [")]
+    assert lines == [
+        "- [20261022-01] 2026-10-22 09:00 [fact] First day note.",
+        "- [20261023-02] 2026-10-23 08:00 [preference] Second day preference.",
+        "- [20261023-01] 2026-10-23 09:00 [fact] Second day note.",
+    ]
+    day23 = box.export(category="fact", on_date="2026-10-23")
+    assert "total: 1" in day23 and "Second day note." in day23
+    assert "First day note." not in day23
+
+
+def test_export_json_parses_and_is_one_array(tmp_path):
+    import json
+
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "The workshop opens at nine.", now=NOW)
+    box.add("preference", "Quiet mornings.", now=NOW)
+    payload = json.loads(box.export(format="json"))
+    assert payload == [
+        {"entry_id": "20261023-01", "category": "fact",
+         "text": "The workshop opens at nine.", "timestamp": "2026-10-23 09:30"},
+        {"entry_id": "20261023-02", "category": "preference",
+         "text": "Quiet mornings.", "timestamp": "2026-10-23 09:30"},
+    ]
+
+
+def test_export_empty_inbox_and_bad_args(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    assert box.export() == "# Export\n\ntotal: 0\n\nno entries\n"
+    assert box.export(format="json") == "[]\n"
+    for kwargs in [dict(format="yaml"), dict(category="diary"), dict(on_date="23-10-2026")]:
+        try:
+            box.export(**kwargs)
+        except ValueError:
+            continue
+        raise AssertionError(f"should reject {kwargs}")
+
+
+def test_export_cli_stdout_and_output_file(tmp_path, capsys):
+    import json
+
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "CLI-exported entry.", now=NOW)
+    assert main(["--root", root, "export", "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["text"] == "CLI-exported entry."
+    out_file = tmp_path / "nested" / "export.md"
+    assert main(["--root", root, "export", "--output", str(out_file)]) == 0
+    assert "exported:" in capsys.readouterr().out
+    assert out_file.read_text(encoding="utf-8").startswith("# Export\n\ntotal: 1\n")
+    assert "CLI-exported entry." in out_file.read_text(encoding="utf-8")
+
+
 def test_rejects_empty_and_unknown(tmp_path):
     box = Inbox(tmp_path / "inbox")
     for bad in [("fact", "  "), ("diary", "hello")]:

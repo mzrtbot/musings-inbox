@@ -8,6 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 ### Added
 - `list` command: list entries, optionally filtered by `--category` and/or `--date` (YYYY-MM-DD), in chronological order; non-entry lines are skipped.
 - `stats` command: total entries, per-category counts (all four categories, zero when empty), earliest/latest entries in chronological order, and total entry-text characters; empty inboxes report `earliest: none` / `latest: none`.
+- `export` command: export the whole inbox as one Markdown document (default) or one JSON array (`--format json`), with the same `--category` / `--date` filters, to stdout or to `--output` file (parent directories are created); empty inboxes export as a Markdown header with `no entries` or as `[]`, with matching library method `Inbox.export()`.
 
 ## [0.1.1] - 2026-10-23
 
