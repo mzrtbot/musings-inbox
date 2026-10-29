@@ -214,3 +214,95 @@ def test_rejects_empty_and_unknown(tmp_path):
         except ValueError:
             continue
         raise AssertionError(f"should reject {bad}")
+
+
+def test_root_rejects_symlink(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    try:
+        Inbox(link)
+    except ValueError:
+        return
+    raise AssertionError("Inbox should reject a symlinked root")
+
+
+def test_root_rejects_symlink_in_parent_prefix(tmp_path):
+    real = tmp_path / "real"
+    (real / "sub").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    try:
+        Inbox(link / "sub")
+    except ValueError:
+        return
+    raise AssertionError("Inbox should reject a symlink in the root's parent prefix")
+
+
+def test_root_rejects_relative_escape(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for bad in ["../outside", "a/../../outside", "../../x"]:
+        try:
+            Inbox(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"Inbox should reject escaping relative root {bad!r}")
+
+
+def test_root_accepts_absolute_and_nested_relative(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    box = Inbox(tmp_path / "abs-inbox")
+    entry = box.add("fact", "Absolute roots are the caller's explicit choice.", now=NOW)
+    assert entry.entry_id == "20261023-01"
+    box2 = Inbox("nested/rel-inbox")
+    box2.init()
+    assert (tmp_path / "nested" / "rel-inbox" / "facts.md").exists()
+
+
+def test_file_whitelist_rejects_unknown_names(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    for bad in ["evil.md", "../outside.md", "facts.md ", "FACTS.MD"]:
+        try:
+            box._file(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"_file should reject {bad!r}")
+
+
+def test_guarded_files_stay_inside_root(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "Guarded write.", now=NOW)
+    for name in ("facts.md", "preferences.md", "experience.md", "materials.md", "index.md"):
+        resolved = box._file(name).resolve()
+        resolved.relative_to(box._root_abs)  # raises if outside
+
+
+def test_symlinked_entry_file_is_refused(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.init()
+    facts = box.root / "facts.md"
+    facts.unlink()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("redirected\n", encoding="utf-8")
+    facts.symlink_to(outside)
+    try:
+        box.add("fact", "Should never land outside.", now=NOW)
+    except IOError:
+        pass
+    else:
+        raise AssertionError("add() should refuse a symlinked facts.md")
+    try:
+        box.verify()
+    except IOError:
+        return
+    raise AssertionError("verify() should refuse a symlinked facts.md")
+
+
+def test_cli_rejects_escaping_root(tmp_path, monkeypatch, capsys):
+    from musings_inbox.inbox import main
+
+    monkeypatch.chdir(tmp_path)
+    assert main(["--root", "../escape", "init"]) == 1
+    assert "escapes the working directory" in capsys.readouterr().err
+    assert not (tmp_path.parent / "escape").exists()

@@ -22,6 +22,10 @@ CATEGORIES = {
     "material": "materials.md",
 }
 INDEX_NAME = "index.md"
+# Every file the inbox is ever allowed to touch. Category arguments map
+# through CATEGORIES into this set; _file() refuses anything else, so a
+# hostile category/filename can never become a path on disk.
+KNOWN_FILES = {INDEX_NAME, *CATEGORIES.values()}
 # Lines written by Inbox.add, e.g.:
 # - [20261023-01] 2026-10-23 09:30 — The workshop opens at nine.
 _ENTRY_LINE = re.compile(r"^-\s\[(\d{8}-\d+)\]\s(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2})\s—\s(.*)$")
@@ -43,8 +47,7 @@ def _ensure_trailing_newline(path: Path) -> None:
             fh.write(b"\n")
 
 
-def _today_id(inbox: Path, now: datetime) -> str:
-    index = inbox / INDEX_NAME
+def _today_id(index: Path, now: datetime) -> str:
     prefix = now.strftime("%Y%m%d")
     count = 0
     if index.exists():
@@ -71,16 +74,59 @@ class Stats:
 
 class Inbox:
     def __init__(self, root: str | Path):
-        self.root = Path(root)
+        if root is None or not str(root).strip():
+            raise ValueError("inbox root must not be empty")
+        p = Path(root).expanduser()
+        # Symlink guard: no component of the existing root path may be a
+        # symlink, otherwise files could silently land outside the visible
+        # tree (e.g. --root pointing at a link into /etc or another inbox).
+        for existing in (p, *p.parents):
+            if existing.is_symlink():
+                raise ValueError(f"refusing symlinked path in inbox root: {existing}")
+        resolved = p.resolve()
+        # Traversal guard: a relative --root must stay inside the working
+        # directory; ".." segments that climb above it are rejected.
+        # Absolute roots are the caller's explicit choice and are kept.
+        if not p.is_absolute():
+            try:
+                resolved.relative_to(Path.cwd())
+            except ValueError:
+                raise ValueError(
+                    f"relative inbox root escapes the working directory: {root!r}"
+                ) from None
+        self.root = p
+        self._root_abs = resolved
+
+    def _file(self, name: str) -> Path:
+        """Return the path of a whitelisted inbox file, guarded.
+
+        ``name`` must be one of the fixed inbox filenames (the four
+        category files plus the index). The resolved path must stay
+        inside the resolved inbox root and must not be a symlink — so a
+        swapped-in link can never redirect a write outside the inbox.
+        Violations raise ``ValueError`` (bad name) or ``IOError``
+        (escape attempt / symlink).
+        """
+        if name not in KNOWN_FILES:
+            raise ValueError(f"unexpected inbox filename: {name!r} (known: {sorted(KNOWN_FILES)})")
+        p = self.root / name
+        if p.is_symlink():
+            raise IOError(f"refusing to follow symlink: {p}")
+        resolved = p.resolve()
+        try:
+            resolved.relative_to(self._root_abs)
+        except ValueError:
+            raise IOError(f"inbox file escapes the inbox root: {p}") from None
+        return p
 
     def init(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         for filename in CATEGORIES.values():
-            p = self.root / filename
+            p = self._file(filename)
             if not p.exists():
                 title = filename.removesuffix(".md").title()
                 p.write_text(f"# {title}\n", encoding="utf-8")
-        index = self.root / INDEX_NAME
+        index = self._file(INDEX_NAME)
         if not index.exists():
             index.write_text("# Index\n\n| ID | Time | Category | Summary |\n|---|---|---|---|\n", encoding="utf-8")
 
@@ -92,9 +138,9 @@ class Inbox:
             raise ValueError("entry text must not be empty")
         self.init()
         now = now or datetime.now()  # the only permitted time source: a real clock read
-        entry_id = _today_id(self.root, now)
+        entry_id = _today_id(self._file(INDEX_NAME), now)
         timestamp = now.strftime("%Y-%m-%d %H:%M")
-        target = self.root / CATEGORIES[category]
+        target = self._file(CATEGORIES[category])
         _ensure_trailing_newline(target)
         line = f"- [{entry_id}] {timestamp} — {text}\n"
         with target.open("a", encoding="utf-8") as fh:
@@ -103,7 +149,7 @@ class Inbox:
         lines = target.read_text(encoding="utf-8").splitlines()
         if not lines or lines[-1] != line.rstrip("\n"):
             raise IOError("read-back failed: appended entry is not a standalone last line")
-        index = self.root / INDEX_NAME
+        index = self._file(INDEX_NAME)
         _ensure_trailing_newline(index)
         summary = text[:60].replace("|", "/")
         with index.open("a", encoding="utf-8") as fh:
@@ -130,7 +176,7 @@ class Inbox:
         categories = [category] if category is not None else list(CATEGORIES)
         entries: list[Entry] = []
         for cat in categories:
-            p = self.root / CATEGORIES[cat]
+            p = self._file(CATEGORIES[cat])
             if not p.exists():
                 continue
             for ln in p.read_text(encoding="utf-8").splitlines():
@@ -208,7 +254,7 @@ class Inbox:
     def search(self, query: str) -> list[str]:
         hits: list[str] = []
         for filename in CATEGORIES.values():
-            p = self.root / filename
+            p = self._file(filename)
             if p.exists():
                 for ln in p.read_text(encoding="utf-8").splitlines():
                     if query.lower() in ln.lower():
@@ -219,12 +265,12 @@ class Inbox:
         """Return {filename: md5} for every inbox file; raise on index mismatch."""
         result = {}
         indexed_ids: set[str] = set()
-        index = self.root / INDEX_NAME
+        index = self._file(INDEX_NAME)
         if index.exists():
             indexed_ids = set(re.findall(r"\d{8}-\d+", index.read_text(encoding="utf-8")))
         found_ids: set[str] = set()
         for filename in list(CATEGORIES.values()) + [INDEX_NAME]:
-            p = self.root / filename
+            p = self._file(filename)
             if p.exists():
                 result[filename] = _md5(p)
                 if filename != INDEX_NAME:
@@ -257,8 +303,8 @@ def main(argv: list[str] | None = None) -> int:
                           help="write to this file instead of stdout")
     sub.add_parser("verify")
     args = ap.parse_args(argv)
-    inbox = Inbox(args.root)
     try:
+        inbox = Inbox(args.root)
         if args.cmd == "init":
             inbox.init()
             print(f"initialized: {inbox.root}")

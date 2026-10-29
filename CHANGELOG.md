@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+### Security
+- `--root` hardening: a symlinked inbox root (or a symlink anywhere in its existing parent prefix) is rejected; relative roots containing `..` that would climb above the working directory are rejected. Every file the inbox reads or writes must be one of the five whitelisted filenames (four category files + index), must resolve inside the resolved inbox root, and must not be a symlink — `add` / `verify` / `search` now raise instead of following a swapped-in link.
+
 ### Added
 - `list` command: list entries, optionally filtered by `--category` and/or `--date` (YYYY-MM-DD), in chronological order; non-entry lines are skipped.
 - `stats` command: total entries, per-category counts (all four categories, zero when empty), earliest/latest entries in chronological order, and total entry-text characters; empty inboxes report `earliest: none` / `latest: none`.
