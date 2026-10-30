@@ -29,6 +29,33 @@ KNOWN_FILES = {INDEX_NAME, *CATEGORIES.values()}
 # Lines written by Inbox.add, e.g.:
 # - [20261023-01] 2026-10-23 09:30 — The workshop opens at nine.
 _ENTRY_LINE = re.compile(r"^-\s\[(\d{8}-\d+)\]\s(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2})\s—\s(.*)$")
+# Tag syntax: '#' followed by one or more word characters (\w is Unicode,
+# so '#灵感' and '#inbox' both match; '#' must not be glued to a preceding
+# word character, so "a#b" is not a tag). The '#' of a Markdown header
+# ("# Title") followed by a space does not match either.
+_TAG_RE = re.compile(r"(?<!\w)#(\w+)")
+
+
+def parse_tags(text: str) -> list[str]:
+    """Extract #tags from entry text.
+
+    Tags are returned lowercased, deduplicated, in order of first
+    appearance. A bare '#' with no word characters after it (or glued
+    to a preceding word, as in "a#b") yields nothing.
+    """
+    seen: set[str] = set()
+    tags: list[str] = []
+    for match in _TAG_RE.finditer(text):
+        tag = match.group(1).lower()
+        if tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+    return tags
+
+
+def _normalize_tag(tag: str) -> str:
+    """Accept 'trip' or '#trip'; normalize to the lowercase bare tag name."""
+    return tag.lstrip("#").strip().lower()
 
 
 def _md5(path: Path) -> str:
@@ -61,6 +88,11 @@ class Entry:
     category: str
     text: str
     timestamp: str
+    tags: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.tags is None:
+            self.tags = parse_tags(self.text)
 
 
 @dataclass
@@ -156,11 +188,18 @@ class Inbox:
             fh.write(f"| {entry_id} | {timestamp} | {category} | {summary} |\n")
         return Entry(entry_id, category, text, timestamp)
 
-    def list_entries(self, category: str | None = None, on_date: str | None = None) -> list[Entry]:
-        """List entries, optionally filtered by category and/or date.
+    def list_entries(
+        self,
+        category: str | None = None,
+        on_date: str | None = None,
+        tag: str | None = None,
+    ) -> list[Entry]:
+        """List entries, optionally filtered by category, date, and/or tag.
 
         ``category`` must be one of the known categories; ``on_date`` must
-        be ``YYYY-MM-DD`` and matches the date part of the entry timestamp.
+        be ``YYYY-MM-DD`` and matches the date part of the entry timestamp;
+        ``tag`` matches a ``#tag`` in the entry text (case-insensitive,
+        a leading '#' is accepted).
         Entries are returned in chronological order (timestamp, then ID),
         so listing is stable regardless of which category file they live in.
         Non-entry lines (headers, hand-written notes) are skipped, never
@@ -173,6 +212,7 @@ class Inbox:
                 datetime.strptime(on_date, "%Y-%m-%d")
             except ValueError:
                 raise ValueError(f"invalid date: {on_date!r} (expected YYYY-MM-DD)") from None
+        wanted = _normalize_tag(tag) if tag is not None else None
         categories = [category] if category is not None else list(CATEGORIES)
         entries: list[Entry] = []
         for cat in categories:
@@ -186,7 +226,10 @@ class Inbox:
                 entry_id, timestamp, text = match.groups()
                 if on_date is not None and not timestamp.startswith(on_date):
                     continue
-                entries.append(Entry(entry_id, cat, text, timestamp))
+                entry = Entry(entry_id, cat, text, timestamp)
+                if wanted is not None and wanted not in entry.tags:
+                    continue
+                entries.append(entry)
         entries.sort(key=lambda e: (e.timestamp, e.entry_id))
         return entries
 
@@ -251,14 +294,26 @@ class Inbox:
             lines.append("no entries")
         return "\n".join(lines) + "\n"
 
-    def search(self, query: str) -> list[str]:
+    def search(self, query: str, tag: str | None = None) -> list[str]:
+        """Search entry lines for ``query`` (case-insensitive).
+
+        ``tag`` additionally requires the hit to be an entry line whose
+        parsed tags contain the tag (case-insensitive, a leading '#' is
+        accepted); non-entry lines never match when ``tag`` is given.
+        """
+        wanted = _normalize_tag(tag) if tag is not None else None
         hits: list[str] = []
         for filename in CATEGORIES.values():
             p = self._file(filename)
             if p.exists():
                 for ln in p.read_text(encoding="utf-8").splitlines():
-                    if query.lower() in ln.lower():
-                        hits.append(f"{filename}: {ln}")
+                    if query.lower() not in ln.lower():
+                        continue
+                    if wanted is not None:
+                        match = _ENTRY_LINE.match(ln)
+                        if match is None or wanted not in parse_tags(match.group(3)):
+                            continue
+                    hits.append(f"{filename}: {ln}")
         return hits
 
     def verify(self) -> dict[str, str]:
@@ -290,9 +345,12 @@ def main(argv: list[str] | None = None) -> int:
     p_add.add_argument("--text", required=True)
     p_search = sub.add_parser("search")
     p_search.add_argument("query")
+    p_search.add_argument("--tag", dest="tag", default=None,
+                          help="only match entries carrying this #tag")
     p_list = sub.add_parser("list", help="list entries, optionally filtered by category and/or date")
     p_list.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
     p_list.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")
+    p_list.add_argument("--tag", dest="tag", default=None, help="filter by #tag in entry text")
     sub.add_parser("stats", help="show per-category counts, earliest/latest entries, total characters")
     p_export = sub.add_parser("export", help="export the inbox as one Markdown document or JSON array")
     p_export.add_argument("--format", dest="format", default="markdown", choices=["markdown", "json"],
@@ -312,10 +370,10 @@ def main(argv: list[str] | None = None) -> int:
             entry = inbox.add(args.category, args.text)
             print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
         elif args.cmd == "search":
-            hits = inbox.search(args.query)
+            hits = inbox.search(args.query, tag=args.tag)
             print("\n".join(hits) if hits else "no matches")
         elif args.cmd == "list":
-            entries = inbox.list_entries(category=args.category, on_date=args.on_date)
+            entries = inbox.list_entries(category=args.category, on_date=args.on_date, tag=args.tag)
             if entries:
                 for entry in entries:
                     print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")

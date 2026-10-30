@@ -306,3 +306,65 @@ def test_cli_rejects_escaping_root(tmp_path, monkeypatch, capsys):
     assert main(["--root", "../escape", "init"]) == 1
     assert "escapes the working directory" in capsys.readouterr().err
     assert not (tmp_path.parent / "escape").exists()
+
+
+def test_parse_tags_english_chinese_and_punctuation():
+    from musings_inbox.inbox import parse_tags
+
+    assert parse_tags("Morning walk #routine #quiet") == ["routine", "quiet"]
+    assert parse_tags("一杯茶 #灵感 随后写作") == ["灵感"]
+    assert parse_tags("#Trip notes, packed!") == ["trip"]
+    assert parse_tags("#tag #TAG #Tag") == ["tag"]  # deduplicated, lowercased
+    assert parse_tags("no tags here") == []
+    assert parse_tags("# ") == []  # bare hash with no word after it
+    assert parse_tags("a#b glued") == []  # glued to a word is not a tag
+
+
+def test_list_entries_tag_filter(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "The workshop opens at nine. #routine", now=NOW)
+    box.add("preference", "Quiet mornings. #Routine", now=NOW)
+    box.add("experience", "No tags on this one.", now=NOW)
+    tagged = box.list_entries(tag="routine")
+    assert [e.entry_id for e in tagged] == ["20261023-01", "20261023-02"]
+    assert all(e.tags == ["routine"] for e in tagged)
+    assert [e.entry_id for e in box.list_entries(tag="#ROUTINE")] == ["20261023-01", "20261023-02"]
+    assert box.list_entries(tag="missing") == []
+    # tag composes with the other filters
+    assert [e.entry_id for e in box.list_entries(category="fact", tag="routine")] == ["20261023-01"]
+    assert box.list_entries(category="preference", tag="routine", on_date="2026-10-24") == []
+    untagged = box.list_entries()
+    assert untagged[2].tags == []
+
+
+def test_search_tag_filter(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "The workshop opens at nine. #routine", now=NOW)
+    box.add("preference", "The workshop cat naps. No tag.", now=NOW)
+    # library: tag narrows, non-entry lines never match with a tag given
+    assert len(box.search("workshop")) == 2
+    hits = box.search("workshop", tag="routine")
+    assert len(hits) == 1 and "opens at nine" in hits[0]
+    assert box.search("workshop", tag="missing") == []
+    assert box.search("opens", tag="#ROUTINE") == box.search("opens", tag="routine")
+    # CLI
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "search", "workshop", "--tag", "routine"]) == 0
+    out = capsys.readouterr().out
+    assert "opens at nine" in out and "cat naps" not in out
+    assert main(["--root", root, "search", "workshop", "--tag", "missing"]) == 0
+    assert capsys.readouterr().out.strip() == "no matches"
+
+
+def test_list_cli_tag_filter(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "Tagged entry. #trip", now=NOW)
+    box.add("fact", "Untagged entry.", now=NOW)
+    assert main(["--root", root, "list", "--tag", "trip"]) == 0
+    out = capsys.readouterr().out
+    assert "Tagged entry." in out and "Untagged entry." not in out

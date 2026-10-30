@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+### Added
+- Tag support: entry text may carry `#tags` (Unicode-aware, case-insensitive, deduplicated); `Inbox.list_entries(..., tag=...)` and `Inbox.search(query, tag=...)` filter by tag, `Entry.tags` exposes the parsed tags, and the CLI gains `search --tag` and `list --tag` (a leading '#' in the filter is accepted).
+
 ### Security
 - `--root` hardening: a symlinked inbox root (or a symlink anywhere in its existing parent prefix) is rejected; relative roots containing `..` that would climb above the working directory are rejected. Every file the inbox reads or writes must be one of the five whitelisted filenames (four category files + index), must resolve inside the resolved inbox root, and must not be a symlink — `add` / `verify` / `search` now raise instead of following a swapped-in link.
 
