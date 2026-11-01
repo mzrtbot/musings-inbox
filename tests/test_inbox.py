@@ -368,3 +368,57 @@ def test_list_cli_tag_filter(tmp_path, capsys):
     assert main(["--root", root, "list", "--tag", "trip"]) == 0
     out = capsys.readouterr().out
     assert "Tagged entry." in out and "Untagged entry." not in out
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _read_shipped(path: Path) -> str:
+    # Every shipped template/doc must honor the trailing-newline discipline
+    # the protocol itself teaches, so read bytes and check the tail.
+    data = path.read_bytes()
+    assert data.endswith(b"\n"), f"{path} must end with a newline"
+    return data.decode("utf-8")
+
+
+def test_zh_template_pack_is_complete():
+    zh = REPO_ROOT / "templates" / "zh"
+    expected = {"facts.md", "preferences.md", "experience.md", "materials.md",
+                "index.md", "README.md"}
+    assert {p.name for p in zh.glob("*.md")} == expected
+    headers = {"facts.md": "# 事实", "preferences.md": "# 偏好",
+               "experience.md": "# 经验", "materials.md": "# 素材",
+               "index.md": "# 索引"}
+    for name, header in headers.items():
+        text = _read_shipped(zh / name)
+        assert text.startswith(header), f"{name} must start with {header}"
+    index_text = _read_shipped(zh / "index.md")
+    assert "| 编号 | 时间 | 类别 | 摘要 |" in index_text
+    readme = _read_shipped(zh / "README.md")
+    assert "docs/protocol.md" in readme
+
+
+def test_zh_templates_carry_no_fictional_entries():
+    # Templates ship guidance only; a "- [ID]" entry line must not appear.
+    import re as _re
+
+    zh = REPO_ROOT / "templates" / "zh"
+    for name in ("facts.md", "preferences.md", "experience.md", "materials.md"):
+        text = _read_shipped(zh / name)
+        assert not _re.search(r"^-\s\[\d{8}-\d+\]", text, _re.M), \
+            f"{name} must not contain an entry line"
+
+
+def test_protocol_doc_covers_the_protocol():
+    doc = _read_shipped(REPO_ROOT / "docs" / "protocol.md")
+    for phrase in [
+        "Musings", "随想",
+        "- [YYYYMMDD-NN] YYYY-MM-DD HH:MM",  # entry line format
+        "| YYYYMMDD-NN |",                    # index row format
+        "real clock",                         # time discipline
+        "read-back",                          # verification discipline
+        "whitelist",                          # security model
+        "#tags",                              # tag syntax
+        "SKILL.md",                           # relation to the short edition
+    ]:
+        assert phrase in doc, f"protocol.md should document {phrase!r}"

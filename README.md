@@ -69,7 +69,9 @@ my-inbox/
 
 ## Using it as an agent skill
 
-`SKILL.md` in this repo is the public edition of the skill that drives the workflow above (trigger words, classification, read/write discipline, verification). Drop it into your agent's skills directory (ClawHub-compatible layout) and your agent can run the same protocol.
+`SKILL.md` in this repo is the public edition of the skill that drives the workflow above (trigger words, classification, read/write discipline, verification). Drop it into your agent's skills directory (ClawHub-compatible layout) and your agent can run the same protocol. The full reference is `docs/protocol.md` — every rule in one place: trigger words, clock discipline, classification, the filing steps, entry and index formats, tag syntax, the query protocol, hard rules, and the security model.
+
+Starter files: `templates/` (English) and `templates/zh/` (Chinese) hold drop-in category files and index; copy the set you want into your inbox directory. All example entries in this repo are fictional.
 
 ## Status
 

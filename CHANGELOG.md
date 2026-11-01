@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 ## [Unreleased]
 
 ### Added
+- Chinese template pack `templates/zh/`: Chinese editions of the four category templates, the index, and a `README.md` usage guide (same filenames, Chinese headers and guidance comments; drop-in over `templates/`).
+- `docs/protocol.md`: the full protocol reference — trigger words, clock discipline, classification, the seven filing steps, entry/index line formats, tag syntax, query protocol, hard rules, and the security model. `SKILL.md` remains the short operational edition.
 - Tag support: entry text may carry `#tags` (Unicode-aware, case-insensitive, deduplicated); `Inbox.list_entries(..., tag=...)` and `Inbox.search(query, tag=...)` filter by tag, `Entry.tags` exposes the parsed tags, and the CLI gains `search --tag` and `list --tag` (a leading '#' in the filter is accepted).
 
 ### Security

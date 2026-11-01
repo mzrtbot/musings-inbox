@@ -9,7 +9,7 @@
 - Security hardening of file paths: traversal/symlink guards and a strict filename whitelist for category files.
 - `#tag` support in entries, with `search --tag` filtering.
 - Search filters: `--since` and `--category`.
-- Chinese template pack (`templates/zh/`) and a full protocol document (`docs/protocol.md`).
+- Chinese template pack (`templates/zh/`) and a full protocol document (`docs/protocol.md`) — shipped.
 - A worked example inbox with a step-by-step walkthrough.
 
 ## Later
