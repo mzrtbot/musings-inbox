@@ -1,15 +1,16 @@
 # Roadmap
 
-## Now (0.1.x)
+## Now (0.2.x)
 - CI on every push (pytest, 3 Python versions) and a demo smoke test.
 - `list` and `stats` commands for reading an inbox back without grep.
 - `export` to a single Markdown file or JSON for backup and migration.
-
-## Next (0.2.x)
 - Security hardening of file paths: traversal/symlink guards and a strict filename whitelist for category files.
-- `#tag` support in entries, with `search --tag` filtering.
+- `#tag` support in entries, with `search --tag` / `list --tag` filtering.
+- Chinese template pack (`templates/zh/`) and a full protocol document (`docs/protocol.md`).
+- Issue/PR templates and release hygiene (v0.2.0).
+
+## Next (0.3.x)
 - Search filters: `--since` and `--category`.
-- Chinese template pack (`templates/zh/`) and a full protocol document (`docs/protocol.md`) — shipped.
 - A worked example inbox with a step-by-step walkthrough.
 
 ## Later

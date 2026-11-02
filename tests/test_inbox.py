@@ -422,3 +422,21 @@ def test_protocol_doc_covers_the_protocol():
         "SKILL.md",                           # relation to the short edition
     ]:
         assert phrase in doc, f"protocol.md should document {phrase!r}"
+
+
+def _pyproject_version():
+    import re
+
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+    assert m, "could not find version in pyproject.toml"
+    return m.group(1)
+
+
+def test_release_version_is_consistent():
+    """Release hygiene: pyproject version must match the latest CHANGELOG section."""
+    version = _pyproject_version()
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert f"## [{version}]" in changelog, (
+        f"pyproject version {version} has no matching CHANGELOG section"
+    )

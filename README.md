@@ -75,7 +75,7 @@ Starter files: `templates/` (English) and `templates/zh/` (Chinese) hold drop-in
 
 ## Status
 
-v0.1.1 — the CLI implements init / add / search / list / stats / export / verify with the newline and read-back rules enforced in code and covered by tests. Entry text may carry `#tags` (Unicode, case-insensitive); `search --tag` and `list --tag` filter entries by tag. `list` filters by `--category` and/or `--date` (YYYY-MM-DD) and prints entries in chronological order. `stats` reports per-category counts, earliest/latest entries, and total entry-text characters. `export` writes the whole inbox as one Markdown document or one JSON array, with the same `--category` / `--date` filters, to stdout or `--output` file. The skill protocol is at v1.0.13 in daily on-device use; this repo is its public, sanitized edition (no private log content is included — `examples/` uses fictional entries).
+v0.2.0 — the CLI implements init / add / search / list / stats / export / verify with the newline and read-back rules enforced in code and covered by tests. Entry text may carry `#tags` (Unicode, case-insensitive); `search --tag` and `list --tag` filter entries by tag. `list` filters by `--category` and/or `--date` (YYYY-MM-DD) and prints entries in chronological order. `stats` reports per-category counts, earliest/latest entries, and total entry-text characters. `export` writes the whole inbox as one Markdown document or one JSON array, with the same `--category` / `--date` filters, to stdout or `--output` file. The skill protocol is at v1.0.13 in daily on-device use; this repo is its public, sanitized edition (no private log content is included — `examples/` uses fictional entries).
 
 ## 中文简介
 

@@ -5,18 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-03
+
 ### Added
+- GitHub issue templates (bug report, feature request) and a pull request template with a checklist (tests, CHANGELOG, docs, desensitization scan).
 - Chinese template pack `templates/zh/`: Chinese editions of the four category templates, the index, and a `README.md` usage guide (same filenames, Chinese headers and guidance comments; drop-in over `templates/`).
 - `docs/protocol.md`: the full protocol reference — trigger words, clock discipline, classification, the seven filing steps, entry/index line formats, tag syntax, query protocol, hard rules, and the security model. `SKILL.md` remains the short operational edition.
 - Tag support: entry text may carry `#tags` (Unicode-aware, case-insensitive, deduplicated); `Inbox.list_entries(..., tag=...)` and `Inbox.search(query, tag=...)` filter by tag, `Entry.tags` exposes the parsed tags, and the CLI gains `search --tag` and `list --tag` (a leading '#' in the filter is accepted).
-
-### Security
-- `--root` hardening: a symlinked inbox root (or a symlink anywhere in its existing parent prefix) is rejected; relative roots containing `..` that would climb above the working directory are rejected. Every file the inbox reads or writes must be one of the five whitelisted filenames (four category files + index), must resolve inside the resolved inbox root, and must not be a symlink — `add` / `verify` / `search` now raise instead of following a swapped-in link.
-
-### Added
 - `list` command: list entries, optionally filtered by `--category` and/or `--date` (YYYY-MM-DD), in chronological order; non-entry lines are skipped.
 - `stats` command: total entries, per-category counts (all four categories, zero when empty), earliest/latest entries in chronological order, and total entry-text characters; empty inboxes report `earliest: none` / `latest: none`.
 - `export` command: export the whole inbox as one Markdown document (default) or one JSON array (`--format json`), with the same `--category` / `--date` filters, to stdout or to `--output` file (parent directories are created); empty inboxes export as a Markdown header with `no entries` or as `[]`, with matching library method `Inbox.export()`.
+
+### Security
+- `--root` hardening: a symlinked inbox root (or a symlink anywhere in its existing parent prefix) is rejected; relative roots containing `..` that would climb above the working directory are rejected. Every file the inbox reads or writes must be one of the five whitelisted filenames (four category files + index), must resolve inside the resolved inbox root, and must not be a symlink — `add` / `verify` / `search` now raise instead of following a swapped-in link.
 
 ## [0.1.1] - 2026-10-23
 
