@@ -440,3 +440,74 @@ def test_release_version_is_consistent():
     assert f"## [{version}]" in changelog, (
         f"pyproject version {version} has no matching CHANGELOG section"
     )
+
+
+SAMPLE_INBOX = REPO_ROOT / "examples" / "sample-inbox"
+
+
+def test_sample_inbox_verify_passes():
+    """The shipped worked example must be a consistent, verifiable inbox."""
+    from musings_inbox.inbox import Inbox
+
+    fingerprints = Inbox(SAMPLE_INBOX).verify()
+    assert set(fingerprints) == {"facts.md", "preferences.md", "experience.md",
+                                 "materials.md", "index.md"}
+
+
+def test_sample_inbox_is_reproducible(tmp_path):
+    """The generator script must rebuild the shipped copy byte-for-byte."""
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "examples" / "generate-sample-inbox.py"),
+         str(tmp_path / "sample-inbox")],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    )
+    assert out.returncode == 0, out.stderr
+    for name in ("facts.md", "preferences.md", "experience.md",
+                 "materials.md", "index.md"):
+        rebuilt = tmp_path / "sample-inbox" / name
+        shipped = SAMPLE_INBOX / name
+        assert rebuilt.exists(), f"generator did not produce {name}"
+        assert rebuilt.read_bytes() == shipped.read_bytes(), \
+            f"shipped {name} drifted from the generator script"
+
+
+def test_sample_inbox_coverage():
+    """The example exercises every feature the walkthrough demonstrates."""
+    from musings_inbox.inbox import Inbox
+
+    box = Inbox(SAMPLE_INBOX)
+    entries = box.list_entries()
+    assert len(entries) == 12
+    by_category = {}
+    for entry in entries:
+        by_category[entry.category] = by_category.get(entry.category, 0) + 1
+    assert by_category == {"fact": 5, "preference": 2, "experience": 3, "material": 2}
+    # tags: english and chinese, exercised by search/list --tag
+    assert [e.entry_id for e in box.list_entries(tag="food")] == ["20261022-01", "20261023-01"]
+    assert [e.entry_id for e in box.list_entries(tag="灵感")] == ["20261024-03"]
+    assert box.search("workshop", tag="routine")
+    # entry IDs ascend within each day in chronological order
+    for a, b in zip(entries, entries[1:]):
+        assert (a.timestamp, a.entry_id) <= (b.timestamp, b.entry_id)
+    assert entries[0].entry_id == "20261020-01"
+    assert entries[-1].entry_id == "20261024-03"
+
+
+def test_walkthrough_doc_covers_steps():
+    doc = _read_shipped(REPO_ROOT / "docs" / "walkthrough.md")
+    for phrase in [
+        "examples/sample-inbox",        # the worked example it queries
+        "verify",                       # step 1: trust the disk
+        "stats",                        # step 2: shape of the log
+        "search workshop --tag",        # step 3: tag-filtered search
+        "list --tag",                   # step 4: list filters
+        "export --format json",         # step 5: backup/migration
+        "add --type",                   # step 6: filing your own entries
+        "docs/protocol.md",             # where the rules live
+        "fictional",                    # all entries are invented
+    ]:
+        assert phrase in doc, f"walkthrough.md should cover {phrase!r}"
+    assert "generate-sample-inbox.py" in doc  # reproducible, not hand-written
