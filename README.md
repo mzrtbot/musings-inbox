@@ -42,6 +42,7 @@ musings-inbox --root ./my-inbox init
 musings-inbox --root ./my-inbox add --type fact --text "The workshop opens at nine. #routine"
 musings-inbox --root ./my-inbox search workshop
 musings-inbox --root ./my-inbox search workshop --tag routine  # entries carrying #routine only
+musings-inbox --root ./my-inbox search workshop --since 2026-10-22 --category fact  # recent facts only
 musings-inbox --root ./my-inbox list --category fact --date 2026-10-23
 musings-inbox --root ./my-inbox list --tag routine
 musings-inbox --root ./my-inbox stats
@@ -75,7 +76,7 @@ Starter files: `templates/` (English) and `templates/zh/` (Chinese) hold drop-in
 
 ## Status
 
-v0.2.0 — the CLI implements init / add / search / list / stats / export / verify with the newline and read-back rules enforced in code and covered by tests. Entry text may carry `#tags` (Unicode, case-insensitive); `search --tag` and `list --tag` filter entries by tag. `list` filters by `--category` and/or `--date` (YYYY-MM-DD) and prints entries in chronological order. `stats` reports per-category counts, earliest/latest entries, and total entry-text characters. `export` writes the whole inbox as one Markdown document or one JSON array, with the same `--category` / `--date` filters, to stdout or `--output` file. The skill protocol is at v1.0.13 in daily on-device use; this repo is its public, sanitized edition (no private log content is included — `examples/` uses fictional entries).
+v0.2.1 — the CLI implements init / add / search / list / stats / export / verify with the newline and read-back rules enforced in code and covered by tests. Entry text may carry `#tags` (Unicode, case-insensitive); `search --tag` and `list --tag` filter entries by tag. `search` also filters by `--category` and/or `--since YYYY-MM-DD` (entries on or after that day); a filtered search matches entry lines only. `list` filters by `--category` and/or `--date` (YYYY-MM-DD) and prints entries in chronological order. `stats` reports per-category counts, earliest/latest entries, and total entry-text characters. `export` writes the whole inbox as one Markdown document or one JSON array, with the same `--category` / `--date` filters, to stdout or `--output` file. The skill protocol is at v1.0.13 in daily on-device use; this repo is its public, sanitized edition (no private log content is included — `examples/` uses fictional entries).
 
 ## 中文简介
 

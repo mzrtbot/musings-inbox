@@ -78,6 +78,8 @@ header) is not a tag. Queries can filter by tag, accepting a leading `#`.
 
 - Answer **from the files**, not from parametric memory. Search all category
   files, cite entry IDs, and quote the recorded timestamp as-is.
+- Narrow a search with `--tag`, `--category`, or `--since YYYY-MM-DD`
+  (entries on or after that day); a filtered search matches entry lines only.
 - If nothing is recorded, say so plainly. Never fill gaps by invention.
 - Hand-written non-entry lines (headers, notes) are never treated as entries.
 

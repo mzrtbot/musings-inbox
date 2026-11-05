@@ -58,6 +58,14 @@ def _normalize_tag(tag: str) -> str:
     return tag.lstrip("#").strip().lower()
 
 
+def _validate_date(value: str) -> None:
+    """Raise ValueError unless ``value`` is a valid YYYY-MM-DD date."""
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"invalid date: {value!r} (expected YYYY-MM-DD)") from None
+
+
 def _md5(path: Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()
 
@@ -208,10 +216,7 @@ class Inbox:
         if category is not None and category not in CATEGORIES:
             raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
         if on_date is not None:
-            try:
-                datetime.strptime(on_date, "%Y-%m-%d")
-            except ValueError:
-                raise ValueError(f"invalid date: {on_date!r} (expected YYYY-MM-DD)") from None
+            _validate_date(on_date)
         wanted = _normalize_tag(tag) if tag is not None else None
         categories = [category] if category is not None else list(CATEGORIES)
         entries: list[Entry] = []
@@ -294,24 +299,47 @@ class Inbox:
             lines.append("no entries")
         return "\n".join(lines) + "\n"
 
-    def search(self, query: str, tag: str | None = None) -> list[str]:
+    def search(
+        self,
+        query: str,
+        tag: str | None = None,
+        category: str | None = None,
+        since: str | None = None,
+    ) -> list[str]:
         """Search entry lines for ``query`` (case-insensitive).
 
         ``tag`` additionally requires the hit to be an entry line whose
         parsed tags contain the tag (case-insensitive, a leading '#' is
-        accepted); non-entry lines never match when ``tag`` is given.
+        accepted). ``category`` restricts the search to one category
+        file. ``since`` (``YYYY-MM-DD``) keeps only entries dated on or
+        after that day — the boundary day itself is included.
+        Whenever any filter is given, hits must be entry lines (only
+        they carry a category, a date, and tags); hand-written headers
+        and notes never match a filtered search.
         """
+        if category is not None and category not in CATEGORIES:
+            raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
+        if since is not None:
+            _validate_date(since)
         wanted = _normalize_tag(tag) if tag is not None else None
+        filtered = tag is not None or category is not None or since is not None
+        files = [CATEGORIES[category]] if category is not None else list(CATEGORIES.values())
         hits: list[str] = []
-        for filename in CATEGORIES.values():
+        for filename in files:
             p = self._file(filename)
             if p.exists():
                 for ln in p.read_text(encoding="utf-8").splitlines():
                     if query.lower() not in ln.lower():
                         continue
-                    if wanted is not None:
+                    if filtered:
                         match = _ENTRY_LINE.match(ln)
-                        if match is None or wanted not in parse_tags(match.group(3)):
+                        if match is None:
+                            continue
+                        if wanted is not None and wanted not in parse_tags(match.group(3)):
+                            continue
+                        # Timestamps are "YYYY-MM-DD HH:MM", so the date
+                        # part compares lexicographically with ``since``.
+                        if since is not None and match.group(2)[:10] < since:
                             continue
                     hits.append(f"{filename}: {ln}")
         return hits
@@ -347,6 +375,10 @@ def main(argv: list[str] | None = None) -> int:
     p_search.add_argument("query")
     p_search.add_argument("--tag", dest="tag", default=None,
                           help="only match entries carrying this #tag")
+    p_search.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES),
+                          help="only search this category")
+    p_search.add_argument("--since", dest="since", default=None,
+                          help="only entries on or after this date, YYYY-MM-DD")
     p_list = sub.add_parser("list", help="list entries, optionally filtered by category and/or date")
     p_list.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
     p_list.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")
@@ -370,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
             entry = inbox.add(args.category, args.text)
             print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
         elif args.cmd == "search":
-            hits = inbox.search(args.query, tag=args.tag)
+            hits = inbox.search(args.query, tag=args.tag, category=args.category, since=args.since)
             print("\n".join(hits) if hits else "no matches")
         elif args.cmd == "list":
             entries = inbox.list_entries(category=args.category, on_date=args.on_date, tag=args.tag)

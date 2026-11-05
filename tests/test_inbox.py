@@ -358,6 +358,69 @@ def test_search_tag_filter(tmp_path, capsys):
     assert capsys.readouterr().out.strip() == "no matches"
 
 
+def test_search_since_and_category_filters(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "The workshop opens at nine.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("fact", "The workshop kettle whistles. #routine", now=datetime(2026, 10, 23, 9, 0))
+    box.add("preference", "The workshop cat naps by the stove.", now=datetime(2026, 10, 23, 8, 0))
+    box.add("experience", "The workshop roof leaked in the rain.", now=datetime(2026, 10, 24, 9, 0))
+    assert len(box.search("workshop")) == 4
+    # --since is inclusive: the boundary day itself is kept.
+    since23 = box.search("workshop", since="2026-10-23")
+    assert len(since23) == 3
+    for entry_id in ("20261023-01", "20261023-02", "20261024-01"):
+        assert any(entry_id in ln for ln in since23)
+    assert box.search("workshop", since="2026-10-25") == []
+    # --category restricts to one file.
+    facts = box.search("workshop", category="fact")
+    assert len(facts) == 2 and all(ln.startswith("facts.md:") for ln in facts)
+    assert box.search("workshop", category="material") == []
+    # filters compose: category + since + tag together.
+    assert len(box.search("workshop", category="fact", since="2026-10-23")) == 1
+    assert box.search("workshop", category="fact", since="2026-10-24") == []
+    assert len(box.search("workshop", since="2026-10-23", tag="routine")) == 1
+    assert box.search("workshop", category="preference", tag="routine") == []
+    # a filtered search never returns a hand-written header or note line.
+    (box.root / "facts.md").write_text(
+        "# Workshop notes\n- [20261022-01] 2026-10-22 09:00 — The workshop opens at nine.\n"
+        "- [20261023-01] 2026-10-23 09:00 — The workshop kettle whistles. #routine\n"
+        "workshop scribbled in the margin\n",
+        encoding="utf-8",
+    )
+    assert len(box.search("workshop", category="fact")) == 2
+
+
+def test_search_rejects_bad_category_and_since(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "Something searchable.", now=NOW)
+    for kwargs in [dict(category="diary"), dict(since="23-10-2026"),
+                   dict(since="2026-13-01"), dict(since="2026-10-32")]:
+        try:
+            box.search("searchable", **kwargs)
+        except ValueError:
+            continue
+        raise AssertionError(f"should reject {kwargs}")
+
+
+def test_search_cli_since_and_category_filters(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "The workshop opens at nine.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("preference", "The workshop cat naps.", now=datetime(2026, 10, 23, 8, 0))
+    assert main(["--root", root, "search", "workshop", "--since", "2026-10-23"]) == 0
+    out = capsys.readouterr().out
+    assert "cat naps" in out and "opens at nine" not in out
+    assert main(["--root", root, "search", "workshop", "--category", "fact"]) == 0
+    out = capsys.readouterr().out
+    assert "opens at nine" in out and "cat naps" not in out
+    assert main(["--root", root, "search", "workshop", "--since", "2026-10-24"]) == 0
+    assert capsys.readouterr().out.strip() == "no matches"
+    assert main(["--root", root, "search", "workshop", "--since", "bad-date"]) == 1
+    assert "invalid date" in capsys.readouterr().err
+
+
 def test_list_cli_tag_filter(tmp_path, capsys):
     from musings_inbox.inbox import main
 
@@ -419,6 +482,8 @@ def test_protocol_doc_covers_the_protocol():
         "read-back",                          # verification discipline
         "whitelist",                          # security model
         "#tags",                              # tag syntax
+        "--since",                            # search date filter
+        "--category",                         # search category filter
         "SKILL.md",                           # relation to the short edition
     ]:
         assert phrase in doc, f"protocol.md should document {phrase!r}"
