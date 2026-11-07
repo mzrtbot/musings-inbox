@@ -576,3 +576,194 @@ def test_walkthrough_doc_covers_steps():
     ]:
         assert phrase in doc, f"walkthrough.md should cover {phrase!r}"
     assert "generate-sample-inbox.py" in doc  # reproducible, not hand-written
+
+
+def _seeded_inbox(tmp_path, name="src"):
+    """An inbox with three fictional entries across two days and tags."""
+    box = Inbox(tmp_path / name)
+    box.add("fact", "The workshop opens at nine. #routine", now=datetime(2026, 10, 22, 9, 0))
+    box.add("preference", "Quiet mornings before the kettle boils.", now=datetime(2026, 10, 23, 8, 0))
+    box.add("experience", "Fixed a glued index line by splitting it.", now=datetime(2026, 10, 23, 9, 30))
+    return box
+
+
+def test_import_json_round_trip(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    payload = src.export(format="json")
+    import_file = tmp_path / "export.json"
+    import_file.write_text(payload, encoding="utf-8")
+    dst = Inbox(tmp_path / "dst")
+    result = dst.import_entries(import_file)
+    assert result.duplicates == 0 and not result.dry_run
+    assert [(e.category, e.text, e.timestamp) for e in result.imported] == [
+        ("fact", "The workshop opens at nine. #routine", "2026-10-22 09:00"),
+        ("preference", "Quiet mornings before the kettle boils.", "2026-10-23 08:00"),
+        ("experience", "Fixed a glued index line by splitting it.", "2026-10-23 09:30"),
+    ]
+    # Timestamps are preserved; IDs are freshly assigned for the new inbox.
+    assert [e.entry_id for e in result.imported] == ["20261022-01", "20261023-01", "20261023-02"]
+    assert result.imported[0].tags == ["routine"]
+    assert dst.verify()
+    assert [e.text for e in dst.list_entries()] == [e.text for e in src.list_entries()]
+
+
+def test_import_markdown_export_round_trip(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    import_file = tmp_path / "export.md"
+    import_file.write_text(src.export(), encoding="utf-8")
+    dst = Inbox(tmp_path / "dst")
+    result = dst.import_entries(import_file)
+    assert len(result.imported) == 3 and result.duplicates == 0
+    assert [e.entry_id for e in result.imported] == ["20261022-01", "20261023-01", "20261023-02"]
+    assert dst.verify()
+    # The empty export imports cleanly as zero entries.
+    empty_file = tmp_path / "empty.md"
+    empty_file.write_text(Inbox(tmp_path / "empty-src").export(), encoding="utf-8")
+    empty_result = Inbox(tmp_path / "empty-dst").import_entries(empty_file)
+    assert empty_result.imported == [] and empty_result.duplicates == 0
+
+
+def test_import_deduplicates_on_reimport(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    import_file = tmp_path / "export.json"
+    import_file.write_text(src.export(format="json"), encoding="utf-8")
+    dst = Inbox(tmp_path / "dst")
+    first = dst.import_entries(import_file)
+    assert len(first.imported) == 3
+    second = dst.import_entries(import_file)
+    assert second.imported == [] and second.duplicates == 3
+    assert len(dst.list_entries()) == 3
+    # Importing an inbox's own export into itself is all duplicates.
+    own = src.import_entries(import_file)
+    assert own.imported == [] and own.duplicates == 3
+    # Duplicates inside one file are counted too.
+    doubled = tmp_path / "doubled.json"
+    doubled.write_text(src.export(format="json").replace("]\n", "") + ",\n"
+                       + src.export(format="json").strip()[1:], encoding="utf-8")
+    fresh = Inbox(tmp_path / "fresh")
+    result = fresh.import_entries(doubled)
+    assert len(result.imported) == 3 and result.duplicates == 3
+
+
+def test_import_dry_run_writes_nothing(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    import_file = tmp_path / "export.md"
+    import_file.write_text(src.export(), encoding="utf-8")
+    dst_root = tmp_path / "dst"
+    dst = Inbox(dst_root)
+    result = dst.import_entries(import_file, dry_run=True)
+    assert result.dry_run and len(result.imported) == 3 and result.duplicates == 0
+    assert result.imported[0].entry_id == "20261022-01"  # the ID it would receive
+    assert not dst_root.exists()  # not even init() ran
+    # Dry run against an inbox that already holds the entries: all duplicates.
+    again = src.import_entries(import_file, dry_run=True)
+    assert again.imported == [] and again.duplicates == 3
+    assert len(src.list_entries()) == 3
+
+
+def test_import_markdown_category_file(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    category_file = tmp_path / "facts.md"
+    category_file.write_text((src.root / "facts.md").read_text(encoding="utf-8"), encoding="utf-8")
+    dst = Inbox(tmp_path / "dst")
+    # Without --category the file has no category per line: rejected.
+    try:
+        dst.import_entries(category_file)
+    except ValueError as exc:
+        assert "--category" in str(exc)
+    else:
+        raise AssertionError("category-file import without --category should raise")
+    assert not (tmp_path / "dst").exists()
+    result = dst.import_entries(category_file, category="fact")
+    assert len(result.imported) == 1 and result.imported[0].category == "fact"
+    assert result.imported[0].timestamp == "2026-10-22 09:00"
+    assert dst.verify()
+
+
+def test_import_rejects_bad_json_and_writes_nothing(tmp_path):
+    dst = Inbox(tmp_path / "dst")
+    bad_cases = [
+        "{not json",
+        '{"entry_id": "20261023-01"}',  # not a list
+        '[{"category": "diary", "text": "No such category.", "timestamp": "2026-10-23 09:00"}]',
+        '[{"category": "fact", "text": "Bad month.", "timestamp": "2026-13-01 09:00"}]',
+        '[{"category": "fact", "text": "Bad shape.", "timestamp": "23-10-2026 09:00"}]',
+        '[{"category": "fact", "text": "   ", "timestamp": "2026-10-23 09:00"}]',
+        '[{"category": "fact", "timestamp": "2026-10-23 09:00"}]',  # missing text
+        '["just a string"]',
+    ]
+    for i, payload in enumerate(bad_cases):
+        bad_file = tmp_path / f"bad{i}.json"
+        bad_file.write_text(payload, encoding="utf-8")
+        try:
+            dst.import_entries(bad_file)
+        except ValueError:
+            continue
+        raise AssertionError(f"bad JSON case {i} should raise ValueError")
+    assert not (tmp_path / "dst").exists()
+    assert dst.list_entries() == []
+
+
+def test_import_rejects_bad_markdown_and_writes_nothing(tmp_path):
+    dst = Inbox(tmp_path / "dst")
+    bad = (
+        "# Export\n\ntotal: 2\n\n"
+        "- [20261023-01] 2026-10-23 09:00 [fact] A fine entry.\n"
+        "this line matches no entry shape\n"
+        "- [20261023-02] 2026-10-23 09:30 [diary] Unknown category.\n"
+    )
+    bad_file = tmp_path / "bad.md"
+    bad_file.write_text(bad, encoding="utf-8")
+    try:
+        dst.import_entries(bad_file)
+    except ValueError as exc:
+        assert "line 6" in str(exc) and "line 7" in str(exc)
+    else:
+        raise AssertionError("bad Markdown import should raise ValueError")
+    assert not (tmp_path / "dst").exists()
+    # --format json on a Markdown file fails to parse as JSON.
+    md_file = tmp_path / "export.md"
+    md_file.write_text("- [20261023-01] 2026-10-23 09:00 [fact] Fine.\n", encoding="utf-8")
+    try:
+        dst.import_entries(md_file, format="json")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("--format json on Markdown should raise ValueError")
+    # An undetectable suffix cannot auto-detect a format.
+    dat_file = tmp_path / "export.dat"
+    dat_file.write_text("[]", encoding="utf-8")
+    try:
+        dst.import_entries(dat_file)
+    except ValueError as exc:
+        assert "cannot detect import format" in str(exc)
+    else:
+        raise AssertionError("undetectable suffix should raise ValueError")
+    assert not (tmp_path / "dst").exists()
+
+
+def test_import_cli(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    src = _seeded_inbox(tmp_path)
+    import_file = tmp_path / "export.json"
+    import_file.write_text(src.export(format="json"), encoding="utf-8")
+    root = str(tmp_path / "dst")
+    assert main(["--root", root, "import", "--file", str(import_file), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "dry run: no changes written" in out
+    assert "imported: 3" in out and "duplicates skipped: 0" in out
+    assert not (tmp_path / "dst").exists()
+    assert main(["--root", root, "import", "--file", str(import_file)]) == 0
+    out = capsys.readouterr().out
+    assert "imported: 3" in out
+    assert "20261023-02" in out  # the imported entries are listed
+    assert main(["--root", root, "import", "--file", str(import_file)]) == 0
+    out = capsys.readouterr().out
+    assert "imported: 0" in out and "duplicates skipped: 3" in out
+    # A bad file fails through the CLI with exit code 1 and no partial import.
+    bad_file = tmp_path / "bad.json"
+    bad_file.write_text('[{"category": "fact", "text": "", "timestamp": "2026-10-23 09:00"}]', encoding="utf-8")
+    assert main(["--root", root, "import", "--file", str(bad_file)]) == 1
+    assert "error:" in capsys.readouterr().err
+    assert len(Inbox(tmp_path / "dst").list_entries()) == 3

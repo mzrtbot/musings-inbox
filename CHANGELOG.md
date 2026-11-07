@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-07
+
+### Added
+- `import` command: import entries from an exported Markdown or JSON file (`--file`, `--format auto|json|markdown` auto-detected from the suffix, `--dry-run` preview). Markdown accepts both the `export` output (`- [ID] timestamp [category] text`) and raw category-file lines (`- [ID] timestamp — text`, with `--category` naming the category). Timestamps are preserved, entry IDs are freshly assigned for the target inbox, and entries already present (same category, timestamp, and text) are counted as duplicates and skipped — both against the inbox and within the file. The whole file is validated before anything is written, so a bad file imports nothing; `--dry-run` writes nothing at all. Library method `Inbox.import_entries()` returns the imported entries, the duplicate count, and the dry-run flag.
+
 ## [0.2.1] - 2026-11-06
 
 ### Added

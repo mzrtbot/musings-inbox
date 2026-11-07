@@ -114,7 +114,7 @@ disk. Additional guards:
 ## 9. Reference implementation
 
 `src/musings_inbox/inbox.py` implements `init` / `add` / `search` / `list` /
-`stats` / `export` / `verify` with the newline, read-back, whitelist, and
+`stats` / `export` / `import` / `verify` with the newline, read-back, whitelist, and
 traversal rules enforced in code, covered by `tests/test_inbox.py`.
 `templates/` (English) and `templates/zh/` (Chinese) hold drop-in starter
 files. Agents may call the CLI or follow this protocol directly with their own

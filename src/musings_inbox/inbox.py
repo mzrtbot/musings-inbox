@@ -29,6 +29,9 @@ KNOWN_FILES = {INDEX_NAME, *CATEGORIES.values()}
 # Lines written by Inbox.add, e.g.:
 # - [20261023-01] 2026-10-23 09:30 — The workshop opens at nine.
 _ENTRY_LINE = re.compile(r"^-\s\[(\d{8}-\d+)\]\s(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2})\s—\s(.*)$")
+# Lines written by Inbox.export(format="markdown"), e.g.:
+# - [20261023-01] 2026-10-23 09:30 [fact] The workshop opens at nine.
+_EXPORT_LINE = re.compile(r"^-\s\[(\d{8}-\d+)\]\s(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2})\s\[([A-Za-z]+)\]\s(.*)$")
 # Tag syntax: '#' followed by one or more word characters (\w is Unicode,
 # so '#灵感' and '#inbox' both match; '#' must not be glued to a preceding
 # word character, so "a#b" is not a tag). The '#' of a Markdown header
@@ -64,6 +67,14 @@ def _validate_date(value: str) -> None:
         datetime.strptime(value, "%Y-%m-%d")
     except ValueError:
         raise ValueError(f"invalid date: {value!r} (expected YYYY-MM-DD)") from None
+
+
+def _parse_timestamp(value: str) -> datetime:
+    """Parse a ``YYYY-MM-DD HH:MM`` timestamp, or raise ValueError."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M")
+    except ValueError:
+        raise ValueError(f"invalid timestamp: {value!r} (expected YYYY-MM-DD HH:MM)") from None
 
 
 def _md5(path: Path) -> str:
@@ -110,6 +121,118 @@ class Stats:
     earliest: Entry | None
     latest: Entry | None
     total_chars: int
+
+
+@dataclass
+class ImportResult:
+    imported: list[Entry]
+    duplicates: int
+    dry_run: bool = False
+
+
+def _parse_import_json(raw: str) -> list[tuple[str, str, datetime]]:
+    """Parse a JSON import file (the shape :meth:`Inbox.export` writes).
+
+    The file must be a JSON array of objects with ``category`` (a known
+    category), ``text`` (non-empty), and ``timestamp`` (``YYYY-MM-DD
+    HH:MM``). ``entry_id`` is accepted when present but ignored: imported
+    entries always get fresh IDs. Every problem is collected and reported
+    together, so a bad file fails as a whole instead of importing halfway.
+    """
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON import file: {exc}") from None
+    if not isinstance(payload, list):
+        raise ValueError("JSON import file must contain a list of entries")
+    candidates: list[tuple[str, str, datetime]] = []
+    errors: list[str] = []
+    for pos, item in enumerate(payload):
+        if not isinstance(item, dict):
+            errors.append(f"entry {pos}: expected an object, got {type(item).__name__}")
+            continue
+        category = item.get("category")
+        text = item.get("text")
+        stamp = item.get("timestamp")
+        if category not in CATEGORIES:
+            errors.append(
+                f"entry {pos}: unknown category: {category!r} (choose from {sorted(CATEGORIES)})"
+            )
+            continue
+        if not isinstance(text, str) or not text.strip():
+            errors.append(f"entry {pos}: entry text must not be empty")
+            continue
+        if not isinstance(stamp, str):
+            errors.append(f"entry {pos}: timestamp must be a string, got {type(stamp).__name__}")
+            continue
+        try:
+            when = _parse_timestamp(stamp)
+        except ValueError as exc:
+            errors.append(f"entry {pos}: {exc}")
+            continue
+        candidates.append((category, text.strip(), when))
+    if errors:
+        raise ValueError("invalid import file:\n" + "\n".join(errors))
+    return candidates
+
+
+def _parse_import_markdown(raw: str, category: str | None) -> list[tuple[str, str, datetime]]:
+    """Parse a Markdown import file: export output or a raw category file.
+
+    Accepted lines are the ``export`` Markdown lines
+    (``- [ID] timestamp [category] text``) and, when ``category`` is
+    given, raw category-file lines (``- [ID] timestamp — text``). Blank
+    lines, ``#`` headers, and the ``export`` header lines (``total: N``,
+    ``no entries``) are skipped. Any other line is a format error, and
+    all errors are reported together so a bad file fails as a whole.
+    """
+    candidates: list[tuple[str, str, datetime]] = []
+    errors: list[str] = []
+    for lineno, ln in enumerate(raw.splitlines(), start=1):
+        stripped = ln.strip()
+        if (
+            not stripped
+            or stripped.startswith("#")
+            or stripped == "no entries"
+            or re.fullmatch(r"total: \d+", stripped)
+        ):
+            continue
+        cat: str | None = None
+        text: str | None = None
+        stamp: str | None = None
+        match = _EXPORT_LINE.match(ln)
+        if match is not None:
+            _entry_id, stamp, cat, text = match.groups()
+            if cat not in CATEGORIES:
+                errors.append(
+                    f"line {lineno}: unknown category: {cat!r} (choose from {sorted(CATEGORIES)})"
+                )
+                continue
+        else:
+            match = _ENTRY_LINE.match(ln)
+            if match is None:
+                errors.append(f"line {lineno}: unrecognized line: {ln!r}")
+                continue
+            if category is None:
+                errors.append(
+                    f"line {lineno}: category-file line needs --category "
+                    "(the file has no [category] on its lines)"
+                )
+                continue
+            _entry_id, stamp, text = match.groups()
+            cat = category
+        try:
+            when = _parse_timestamp(stamp)
+        except ValueError as exc:
+            errors.append(f"line {lineno}: {exc}")
+            continue
+        if not text.strip():
+            errors.append(f"line {lineno}: entry text must not be empty")
+            continue
+        candidates.append((cat, text.strip(), when))
+    if errors:
+        raise ValueError("invalid import file:\n" + "\n".join(errors))
+    return candidates
 
 
 class Inbox:
@@ -299,6 +422,84 @@ class Inbox:
             lines.append("no entries")
         return "\n".join(lines) + "\n"
 
+    def import_entries(
+        self,
+        source: str | Path,
+        format: str = "auto",
+        category: str | None = None,
+        dry_run: bool = False,
+    ) -> ImportResult:
+        """Import entries from an exported Markdown or JSON file.
+
+        ``format`` is ``auto`` (default, detected from the file suffix:
+        ``.json`` for JSON, ``.md`` / ``.markdown`` / ``.txt`` for
+        Markdown), ``json``, or ``markdown``. Markdown accepts both the
+        ``export`` output (``- [ID] timestamp [category] text``) and raw
+        category-file lines (``- [ID] timestamp — text``); the latter
+        needs ``category`` to say which category they belong to, and
+        ``--category`` is rejected for JSON, whose entries carry their
+        own category. Timestamps are preserved; entry IDs are always
+        freshly assigned for the target inbox. An entry is a duplicate
+        when the inbox already holds the same category, timestamp, and
+        text — duplicates are counted and skipped, both against existing
+        entries and within the file itself. The whole file is validated
+        before anything is written, so a bad file imports nothing.
+        With ``dry_run`` nothing is written (not even ``init``) and the
+        returned entries carry the IDs they would have received.
+        """
+        if format not in ("auto", "json", "markdown"):
+            raise ValueError(f"unknown import format: {format!r} (choose from auto, json, markdown)")
+        if category is not None and category not in CATEGORIES:
+            raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
+        if format == "json" and category is not None:
+            raise ValueError("--category only applies to Markdown category files, not JSON")
+        path = Path(source)
+        if format == "auto":
+            suffix = path.suffix.lower()
+            if suffix == ".json":
+                format = "json"
+            elif suffix in (".md", ".markdown", ".txt"):
+                format = "markdown"
+            else:
+                raise ValueError(
+                    f"cannot detect import format from {source!r} "
+                    "(use --format json|markdown)"
+                )
+        raw = path.read_text(encoding="utf-8")
+        if format == "json":
+            candidates = _parse_import_json(raw)
+        else:
+            candidates = _parse_import_markdown(raw, category)
+        seen = {(e.category, e.timestamp, e.text) for e in self.list_entries()}
+        imported: list[Entry] = []
+        duplicates = 0
+        if dry_run:
+            # Predict the IDs add() would assign, from the index alone,
+            # without touching any file.
+            index = self._file(INDEX_NAME)
+            index_text = index.read_text(encoding="utf-8") if index.exists() else ""
+            counts: dict[str, int] = {}
+            for prefix in re.findall(r"(\d{8})-\d+", index_text):
+                counts[prefix] = counts.get(prefix, 0) + 1
+            for cat, text, when in candidates:
+                stamp = when.strftime("%Y-%m-%d %H:%M")
+                if (cat, stamp, text) in seen:
+                    duplicates += 1
+                    continue
+                seen.add((cat, stamp, text))
+                day = when.strftime("%Y%m%d")
+                counts[day] = counts.get(day, 0) + 1
+                imported.append(Entry(f"{day}-{counts[day]:02d}", cat, text, stamp))
+        else:
+            for cat, text, when in candidates:
+                stamp = when.strftime("%Y-%m-%d %H:%M")
+                if (cat, stamp, text) in seen:
+                    duplicates += 1
+                    continue
+                seen.add((cat, stamp, text))
+                imported.append(self.add(cat, text, now=when))
+        return ImportResult(imported=imported, duplicates=duplicates, dry_run=dry_run)
+
     def search(
         self,
         query: str,
@@ -391,6 +592,15 @@ def main(argv: list[str] | None = None) -> int:
     p_export.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")
     p_export.add_argument("--output", dest="output", default=None,
                           help="write to this file instead of stdout")
+    p_import = sub.add_parser("import", help="import entries from an exported Markdown or JSON file")
+    p_import.add_argument("--file", dest="source", required=True,
+                          help="Markdown or JSON file to import (usually an export output)")
+    p_import.add_argument("--format", dest="format", default="auto", choices=["auto", "json", "markdown"],
+                          help="input format; auto detects it from the file suffix (default: auto)")
+    p_import.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES),
+                          help="category for Markdown category-file lines (the file has no [category] per line)")
+    p_import.add_argument("--dry-run", dest="dry_run", action="store_true",
+                          help="show what would be imported without writing anything")
     sub.add_parser("verify")
     args = ap.parse_args(argv)
     try:
@@ -437,6 +647,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"exported: {out_path}")
             else:
                 sys.stdout.write(text)
+        elif args.cmd == "import":
+            result = inbox.import_entries(
+                args.source, format=args.format, category=args.category, dry_run=args.dry_run
+            )
+            if result.dry_run:
+                print("dry run: no changes written")
+            for entry in result.imported:
+                print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
+            print(f"imported: {len(result.imported)}")
+            print(f"duplicates skipped: {result.duplicates}")
         elif args.cmd == "verify":
             for name, digest in inbox.verify().items():
                 print(f"{name} {digest}")
