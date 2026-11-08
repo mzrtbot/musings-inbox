@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-09
+
+### Added
+- `doctor` command: read-only inbox health self-check (`Inbox.doctor()` returns a report with an ok flag, a list of issues, and md5 fingerprints). It checks that every known file is present and reachable (not a symlink, inside the root), that every non-empty file ends with a newline, that every entry-looking line matches the entry format and no entry ID is used twice, that every index row matches the row format with a known category and a valid timestamp, that the index and the category files hold the same set of IDs, and that no file is world-writable. A missing file reports just itself, not a cascade of consistency errors, and a doctor run never writes — an uninitialized inbox is reported and left untouched. The CLI prints one `[ok]` / `[error]` / `[warning]` line per check plus the fingerprints, ends with `OK: inbox is healthy` or `doctor found N error(s) and M warning(s)`, and exits 1 when any error is found.
+
 ## [0.2.2] - 2026-11-07
 
 ### Added

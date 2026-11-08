@@ -767,3 +767,161 @@ def test_import_cli(tmp_path, capsys):
     assert main(["--root", root, "import", "--file", str(bad_file)]) == 1
     assert "error:" in capsys.readouterr().err
     assert len(Inbox(tmp_path / "dst").list_entries()) == 3
+
+
+def _doctor_check_names(report, severity=None):
+    """(check, message) pairs from a doctor report, optionally severity-filtered."""
+    return [(i.check, i.message) for i in report.issues
+            if severity is None or i.severity == severity]
+
+
+def test_doctor_healthy_inbox(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    report = box.doctor()
+    assert report.ok and report.issues == []
+    # Fingerprints are the same values verify() reports.
+    assert report.fingerprints == box.verify()
+    assert set(report.fingerprints) == {"facts.md", "preferences.md", "experience.md",
+                                        "materials.md", "index.md"}
+
+
+def test_doctor_empty_initialized_inbox_is_healthy(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.init()
+    report = box.doctor()
+    assert report.ok and report.issues == []
+    assert len(report.fingerprints) == 5
+
+
+def test_doctor_missing_trailing_newline(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    facts = box.root / "facts.md"
+    facts.write_bytes(facts.read_bytes().rstrip(b"\n"))
+    report = box.doctor()
+    assert not report.ok
+    errors = _doctor_check_names(report, "error")
+    assert ("trailing newline", "facts.md does not end with a newline") in errors
+    assert all(check != "index consistency" for check, _ in errors)
+
+
+def test_doctor_index_mismatch(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    index = box.root / "index.md"
+    lines = [ln for ln in index.read_text(encoding="utf-8").splitlines()
+             if "20261022-01" not in ln]
+    index.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    report = box.doctor()
+    assert not report.ok
+    errors = _doctor_check_names(report, "error")
+    assert any(check == "index consistency" and "20261022-01" in msg
+               and "missing from index" in msg for check, msg in errors)
+
+
+def test_doctor_duplicate_entry_ids(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    facts = box.root / "facts.md"
+    line = [ln for ln in facts.read_text(encoding="utf-8").splitlines()
+            if ln.startswith("- [")][0]
+    with facts.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+    report = box.doctor()
+    assert not report.ok
+    errors = _doctor_check_names(report, "error")
+    assert any(check == "duplicate entry ids" and "20261022-01" in msg
+               and "2 times" in msg for check, msg in errors)
+
+
+def test_doctor_malformed_entry_and_index_lines(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    facts = box.root / "facts.md"
+    with facts.open("a", encoding="utf-8") as fh:
+        fh.write("- [20260101-99] forged\n")
+    index = box.root / "index.md"
+    with index.open("a", encoding="utf-8") as fh:
+        fh.write("| 20261023-01 | not-a-date | fact | broken row |\n")
+    report = box.doctor()
+    assert not report.ok
+    errors = _doctor_check_names(report, "error")
+    assert any(check == "entry format" and "facts.md" in msg for check, msg in errors)
+    assert any(check == "index format" and "index.md" in msg for check, msg in errors)
+
+
+def test_doctor_missing_file(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    (box.root / "materials.md").unlink()
+    report = box.doctor()
+    assert not report.ok
+    errors = _doctor_check_names(report, "error")
+    assert any(check == "files present" and "materials.md is missing" in msg
+               for check, msg in errors)
+    # A missing file reports just itself, not a cascade of consistency errors.
+    assert all(check != "index consistency" for check, _ in errors)
+    assert "materials.md" not in report.fingerprints
+
+
+def test_doctor_file_permissions(tmp_path):
+    import os
+
+    box = _seeded_inbox(tmp_path)
+    facts = box.root / "facts.md"
+    os.chmod(facts, 0o666)  # world-writable: an error
+    report = box.doctor()
+    assert not report.ok
+    assert any(check == "file permissions" and "world-writable" in msg
+               for check, msg in _doctor_check_names(report, "error"))
+    os.chmod(facts, 0o660)  # group-writable is the normal umask-002 state: fine
+    report = box.doctor()
+    assert report.ok and report.issues == []
+
+
+def test_doctor_uninitialized_inbox_reports_missing_files(tmp_path):
+    root = tmp_path / "inbox"
+    box = Inbox(root)
+    report = box.doctor()
+    assert not report.ok
+    errors = _doctor_check_names(report, "error")
+    assert len([c for c, _ in errors if c == "files present"]) == 5
+    assert report.fingerprints == {}
+    assert not root.exists()  # doctor never writes
+
+
+def test_doctor_symlinked_file(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    facts = box.root / "facts.md"
+    facts.unlink()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("# Facts\n", encoding="utf-8")
+    facts.symlink_to(outside)
+    report = box.doctor()
+    assert not report.ok
+    assert any(check == "file access" and "symlink" in msg
+               for check, msg in _doctor_check_names(report, "error"))
+
+
+def test_doctor_does_not_write(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    before = box.verify()
+    report = box.doctor()
+    assert report.ok
+    assert box.verify() == before  # fingerprints unchanged: nothing was written
+
+
+def test_doctor_cli(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    box = _seeded_inbox(tmp_path, name="inbox")
+    assert main(["--root", root, "doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "[ok] files present" in out
+    assert "[ok] index consistency" in out
+    assert "fingerprints:" in out and "facts.md " in out
+    assert "OK: inbox is healthy" in out
+    # Break it: strip the trailing newline and the CLI must fail loudly.
+    facts = box.root / "facts.md"
+    facts.write_bytes(facts.read_bytes().rstrip(b"\n"))
+    assert main(["--root", root, "doctor"]) == 1
+    out = capsys.readouterr().out
+    assert "[error] trailing newline: facts.md does not end with a newline" in out
+    assert "doctor found 1 error(s) and 0 warning(s)" in out
+    assert "OK: inbox is healthy" not in out

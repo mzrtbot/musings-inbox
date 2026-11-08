@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,7 +33,13 @@ _ENTRY_LINE = re.compile(r"^-\s\[(\d{8}-\d+)\]\s(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2})
 # Lines written by Inbox.export(format="markdown"), e.g.:
 # - [20261023-01] 2026-10-23 09:30 [fact] The workshop opens at nine.
 _EXPORT_LINE = re.compile(r"^-\s\[(\d{8}-\d+)\]\s(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2})\s\[([A-Za-z]+)\]\s(.*)$")
-# Tag syntax: '#' followed by one or more word characters (\w is Unicode,
+# Index rows written by Inbox.add, e.g.:
+# | 20261023-01 | 2026-10-23 09:30 | fact | The workshop opens at nine. |
+_INDEX_ROW = re.compile(
+    r"^\| (\d{8}-\d+) \| (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) \| ([A-Za-z]+) \| (.*) \|$"
+)
+_INDEX_HEADER = "| ID | Time | Category | Summary |"
+_INDEX_SEPARATOR = "|---|---|---|---|"
 # so '#灵感' and '#inbox' both match; '#' must not be glued to a preceding
 # word character, so "a#b" is not a tag). The '#' of a Markdown header
 # ("# Title") followed by a space does not match either.
@@ -128,6 +135,20 @@ class ImportResult:
     imported: list[Entry]
     duplicates: int
     dry_run: bool = False
+
+
+@dataclass
+class DoctorIssue:
+    severity: str  # "error" | "warning"
+    check: str
+    message: str
+
+
+@dataclass
+class DoctorReport:
+    ok: bool
+    issues: list[DoctorIssue]
+    fingerprints: dict[str, str]
 
 
 def _parse_import_json(raw: str) -> list[tuple[str, str, datetime]]:
@@ -563,6 +584,134 @@ class Inbox:
             raise IOError(f"index/content mismatch: indexed={sorted(indexed_ids)} found={sorted(found_ids)}")
         return result
 
+    def doctor(self) -> DoctorReport:
+        """Run a read-only health self-check over the inbox.
+
+        Checks: every known file is present and reachable (not a symlink,
+        inside the root); every non-empty file ends with a newline; every
+        line that looks like an entry line (``- [ID] ...``) matches the
+        entry format and no entry ID is used twice; every index row
+        matches the row format and names a known category with a valid
+        timestamp; the set of IDs in the index agrees with the set of IDs
+        in the category files (checked only when every file is present,
+        so a missing file reports just itself); no file is world-writable.
+        (Group-writable is not flagged: a umask of 002 makes it the
+        normal state of freshly created files.) The report also
+        carries the md5 fingerprint of every file found — the same values
+        :meth:`verify` returns. Nothing is written: a doctor run on an
+        uninitialized inbox reports the missing files and leaves the disk
+        untouched.
+        """
+        issues: list[DoctorIssue] = []
+        fingerprints: dict[str, str] = {}
+        found_ids: dict[str, int] = {}
+        indexed_ids: dict[str, int] = {}
+        all_present = True
+        for filename in list(CATEGORIES.values()) + [INDEX_NAME]:
+            try:
+                p = self._file(filename)
+            except (ValueError, IOError) as exc:
+                issues.append(DoctorIssue("error", "file access", str(exc)))
+                all_present = False
+                continue
+            if not p.exists():
+                issues.append(DoctorIssue(
+                    "error", "files present",
+                    f"{filename} is missing (run `musings-inbox init` to create it)",
+                ))
+                all_present = False
+                continue
+            fingerprints[filename] = _md5(p)
+            try:
+                text = p.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                issues.append(DoctorIssue(
+                    "error", "file access", f"{filename} is not valid UTF-8"
+                ))
+                continue
+            if text and not text.endswith("\n"):
+                issues.append(DoctorIssue(
+                    "error", "trailing newline",
+                    f"{filename} does not end with a newline",
+                ))
+            mode = stat.S_IMODE(p.stat().st_mode)
+            if mode & 0o002:
+                issues.append(DoctorIssue(
+                    "error", "file permissions",
+                    f"{filename} is world-writable (mode {mode:03o})",
+                ))
+            if filename != INDEX_NAME:
+                for lineno, ln in enumerate(text.splitlines(), start=1):
+                    if not ln.startswith("- ["):
+                        continue
+                    match = _ENTRY_LINE.match(ln)
+                    if match is None:
+                        issues.append(DoctorIssue(
+                            "error", "entry format",
+                            f"{filename}:{lineno}: malformed entry line: {ln!r}",
+                        ))
+                    else:
+                        entry_id = match.group(1)
+                        found_ids[entry_id] = found_ids.get(entry_id, 0) + 1
+            else:
+                for lineno, ln in enumerate(text.splitlines(), start=1):
+                    if not ln.startswith("| "):
+                        continue
+                    if ln in (_INDEX_HEADER, _INDEX_SEPARATOR):
+                        continue
+                    match = _INDEX_ROW.match(ln)
+                    if match is None:
+                        issues.append(DoctorIssue(
+                            "error", "index format",
+                            f"{filename}:{lineno}: malformed index row: {ln!r}",
+                        ))
+                        continue
+                    entry_id, timestamp, category, _summary = match.groups()
+                    if category not in CATEGORIES:
+                        issues.append(DoctorIssue(
+                            "error", "index format",
+                            f"{filename}:{lineno}: unknown category {category!r} in index row",
+                        ))
+                    try:
+                        _parse_timestamp(timestamp)
+                    except ValueError as exc:
+                        issues.append(DoctorIssue(
+                            "error", "index format", f"{filename}:{lineno}: {exc}",
+                        ))
+                    indexed_ids[entry_id] = indexed_ids.get(entry_id, 0) + 1
+        for entry_id, count in sorted(found_ids.items()):
+            if count > 1:
+                issues.append(DoctorIssue(
+                    "error", "duplicate entry ids",
+                    f"{entry_id} appears {count} times in category files",
+                ))
+        for entry_id, count in sorted(indexed_ids.items()):
+            if count > 1:
+                issues.append(DoctorIssue(
+                    "error", "duplicate entry ids",
+                    f"{entry_id} appears {count} times in the index",
+                ))
+        if all_present:
+            indexed = set(indexed_ids)
+            found = set(found_ids)
+            if indexed != found:
+                detail = []
+                if found - indexed:
+                    detail.append(
+                        "in category files but missing from index: "
+                        f"{sorted(found - indexed)}"
+                    )
+                if indexed - found:
+                    detail.append(
+                        "indexed but not in any category file: "
+                        f"{sorted(indexed - found)}"
+                    )
+                issues.append(DoctorIssue(
+                    "error", "index consistency", "; ".join(detail),
+                ))
+        errors = sum(1 for issue in issues if issue.severity == "error")
+        return DoctorReport(ok=errors == 0, issues=issues, fingerprints=fingerprints)
+
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="musings-inbox", description=__doc__)
@@ -601,6 +750,8 @@ def main(argv: list[str] | None = None) -> int:
                           help="category for Markdown category-file lines (the file has no [category] per line)")
     p_import.add_argument("--dry-run", dest="dry_run", action="store_true",
                           help="show what would be imported without writing anything")
+    sub.add_parser("doctor", help="health self-check: trailing newlines, md5 fingerprints, "
+                                  "index consistency, file permissions")
     sub.add_parser("verify")
     args = ap.parse_args(argv)
     try:
@@ -657,6 +808,29 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
             print(f"imported: {len(result.imported)}")
             print(f"duplicates skipped: {result.duplicates}")
+        elif args.cmd == "doctor":
+            report = inbox.doctor()
+            checks = ["files present", "file access", "trailing newline",
+                      "entry format", "index format", "index consistency",
+                      "duplicate entry ids", "file permissions"]
+            for check in checks:
+                flagged = [i for i in report.issues if i.check == check]
+                if not flagged:
+                    print(f"[ok] {check}")
+                else:
+                    for issue in flagged:
+                        print(f"[{issue.severity}] {check}: {issue.message}")
+            if report.fingerprints:
+                print("fingerprints:")
+                for name in sorted(report.fingerprints):
+                    print(f"  {name} {report.fingerprints[name]}")
+            errors = sum(1 for i in report.issues if i.severity == "error")
+            warnings = sum(1 for i in report.issues if i.severity == "warning")
+            if errors == 0 and warnings == 0:
+                print("OK: inbox is healthy")
+            else:
+                print(f"doctor found {errors} error(s) and {warnings} warning(s)")
+                return 1
         elif args.cmd == "verify":
             for name, digest in inbox.verify().items():
                 print(f"{name} {digest}")
