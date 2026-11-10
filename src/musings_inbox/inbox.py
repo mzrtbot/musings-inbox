@@ -151,6 +151,26 @@ class DoctorReport:
     fingerprints: dict[str, str]
 
 
+@dataclass
+class BackupResult:
+    path: Path
+    created: str
+    fingerprints: dict[str, str]
+    entries: int
+
+
+@dataclass
+class RestoreResult:
+    restored: list[Entry]
+    fingerprints: dict[str, str]
+    dry_run: bool = False
+
+
+BACKUP_MANIFEST = "manifest.json"
+BACKUP_FORMAT = "musings-inbox-backup"
+BACKUP_FORMAT_VERSION = 1
+
+
 def _parse_import_json(raw: str) -> list[tuple[str, str, datetime]]:
     """Parse a JSON import file (the shape :meth:`Inbox.export` writes).
 
@@ -712,6 +732,195 @@ class Inbox:
         errors = sum(1 for issue in issues if issue.severity == "error")
         return DoctorReport(ok=errors == 0, issues=issues, fingerprints=fingerprints)
 
+    def backup(self, destination: str | Path | None = None, now: datetime | None = None) -> BackupResult:
+        """Create a timestamped backup of the whole inbox.
+
+        ``destination`` is the directory that receives the backup (created
+        when needed; default ``./backups``). Inside it a new directory
+        ``musings-inbox-backup-YYYYMMDD-HHMMSS`` is created holding a copy
+        of every inbox file plus a ``manifest.json`` with the backup
+        format version, the creation time, the md5 fingerprint of each
+        file, and the entry count. The timestamp comes from a real clock
+        read (or the injected ``now``, for tests). A second backup in the
+        same second gets a ``-2``, ``-3`` suffix instead of overwriting
+        the first. All five inbox files must be present — a missing file
+        fails the backup before anything is written.
+        """
+        now = now or datetime.now()  # the only permitted time source: a real clock read
+        missing = [name for name in list(CATEGORIES.values()) + [INDEX_NAME]
+                   if not self._file(name).exists()]
+        if missing:
+            raise ValueError(
+                f"cannot back up: missing inbox files: {missing} "
+                "(run `musings-inbox init` to create them)"
+            )
+        dest = Path(destination) if destination is not None else Path("backups")
+        stamp = now.strftime("%Y%m%d-%H%M%S")
+        target = dest / f"musings-inbox-backup-{stamp}"
+        suffix = 2
+        while target.exists():
+            target = dest / f"musings-inbox-backup-{stamp}-{suffix}"
+            suffix += 1
+        target.mkdir(parents=True)
+        fingerprints: dict[str, str] = {}
+        for name in list(CATEGORIES.values()) + [INDEX_NAME]:
+            data = self._file(name).read_bytes()
+            (target / name).write_bytes(data)
+            fingerprints[name] = hashlib.md5(data).hexdigest()
+        created = now.strftime("%Y-%m-%d %H:%M")
+        manifest = {
+            "format": BACKUP_FORMAT,
+            "version": BACKUP_FORMAT_VERSION,
+            "created": created,
+            "files": fingerprints,
+            "entries": len(self.list_entries()),
+        }
+        (target / BACKUP_MANIFEST).write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        return BackupResult(path=target, created=created,
+                            fingerprints=fingerprints, entries=manifest["entries"])
+
+    def restore(self, source: str | Path, dry_run: bool = False) -> RestoreResult:
+        """Restore the inbox from a timestamped backup directory.
+
+        ``source`` is a directory created by :meth:`backup` (the five
+        inbox files plus ``manifest.json``). The backup is fully validated
+        before anything is written: the manifest must exist, parse, and
+        name this backup format at the supported version; every listed
+        file must be present, inside the backup directory, not a symlink,
+        and match the manifest's md5 fingerprint; every entry-looking line
+        must match the entry format and every index row the row format;
+        and the set of IDs in the index must agree with the set in the
+        category files. Any problem raises ``ValueError`` listing every
+        problem found, and nothing is written. A successful restore
+        replaces the current inbox contents with the backup (timestamps
+        and entry IDs are kept as backed up, not reassigned). With
+        ``dry_run`` the backup is validated and the entries it would
+        restore are reported, but the disk is left untouched.
+        """
+        source_dir = Path(source)
+        errors: list[str] = []
+        if not source_dir.is_dir():
+            raise ValueError(f"backup not found: {source!r} is not a directory")
+        resolved_source = source_dir.resolve()
+        manifest_path = source_dir / BACKUP_MANIFEST
+        manifest: dict = {}
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            errors.append(f"{BACKUP_MANIFEST} is missing from the backup")
+        else:
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                errors.append(f"{BACKUP_MANIFEST} does not parse: {exc}")
+            if isinstance(manifest, dict):
+                if manifest.get("format") != BACKUP_FORMAT:
+                    errors.append(
+                        f"{BACKUP_MANIFEST} names unknown backup format: "
+                        f"{manifest.get('format')!r} (expected {BACKUP_FORMAT!r})"
+                    )
+                if manifest.get("version") != BACKUP_FORMAT_VERSION:
+                    errors.append(
+                        f"{BACKUP_MANIFEST} names unsupported backup version: "
+                        f"{manifest.get('version')!r} (expected {BACKUP_FORMAT_VERSION})"
+                    )
+                listed = manifest.get("files")
+                expected = {INDEX_NAME, *CATEGORIES.values()}
+                if not isinstance(listed, dict) or set(listed) != expected:
+                    errors.append(
+                        f"{BACKUP_MANIFEST} must list md5 fingerprints for exactly "
+                        f"{sorted(expected)}"
+                    )
+            else:
+                errors.append(f"{BACKUP_MANIFEST} must contain a JSON object")
+        # Read every backup file (guarded: no symlinks, stays inside the
+        # backup directory) and check it against the manifest fingerprint.
+        contents: dict[str, str] = {}
+        fingerprints: dict[str, str] = {}
+        for name in list(CATEGORIES.values()) + [INDEX_NAME]:
+            p = source_dir / name
+            if p.is_symlink():
+                errors.append(f"{name} is a symlink; refusing to follow it")
+                continue
+            try:
+                resolved = p.resolve()
+                resolved.relative_to(resolved_source)
+            except (ValueError, RuntimeError):
+                errors.append(f"{name} escapes the backup directory")
+                continue
+            if not p.is_file():
+                errors.append(f"{name} is missing from the backup")
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                errors.append(f"{name} is not valid UTF-8")
+                continue
+            contents[name] = text
+            digest = hashlib.md5(p.read_bytes()).hexdigest()
+            fingerprints[name] = digest
+            listed = manifest.get("files") if isinstance(manifest, dict) else None
+            if isinstance(listed, dict) and name in listed and listed[name] != digest:
+                errors.append(
+                    f"{name} does not match the manifest fingerprint "
+                    "(backup may be tampered with or damaged)"
+                )
+        if len(contents) == len(CATEGORIES) + 1:
+            found_ids: set[str] = set()
+            indexed_ids: set[str] = set()
+            entries: list[Entry] = []
+            for cat, filename in CATEGORIES.items():
+                for lineno, ln in enumerate(contents[filename].splitlines(), start=1):
+                    if not ln.startswith("- ["):
+                        continue
+                    match = _ENTRY_LINE.match(ln)
+                    if match is None:
+                        errors.append(
+                            f"{filename}:{lineno}: malformed entry line: {ln!r}"
+                        )
+                        continue
+                    entry_id, timestamp, text = match.groups()
+                    found_ids.add(entry_id)
+                    entries.append(Entry(entry_id, cat, text, timestamp))
+            for lineno, ln in enumerate(contents[INDEX_NAME].splitlines(), start=1):
+                if not ln.startswith("| "):
+                    continue
+                if ln in (_INDEX_HEADER, _INDEX_SEPARATOR):
+                    continue
+                match = _INDEX_ROW.match(ln)
+                if match is None:
+                    errors.append(
+                        f"{INDEX_NAME}:{lineno}: malformed index row: {ln!r}"
+                    )
+                    continue
+                entry_id, _timestamp, _category, _summary = match.groups()
+                indexed_ids.add(entry_id)
+            if indexed_ids != found_ids:
+                detail = []
+                if found_ids - indexed_ids:
+                    detail.append(
+                        "in category files but missing from index: "
+                        f"{sorted(found_ids - indexed_ids)}"
+                    )
+                if indexed_ids - found_ids:
+                    detail.append(
+                        "indexed but not in any category file: "
+                        f"{sorted(indexed_ids - found_ids)}"
+                    )
+                errors.append("index/content mismatch: " + "; ".join(detail))
+        if errors:
+            raise ValueError("invalid backup:\n" + "\n".join(errors))
+        entries.sort(key=lambda e: (e.timestamp, e.entry_id))
+        if dry_run:
+            return RestoreResult(restored=entries, fingerprints=fingerprints, dry_run=True)
+        self.root.mkdir(parents=True, exist_ok=True)
+        for name in list(CATEGORIES.values()) + [INDEX_NAME]:
+            self._file(name).write_text(contents[name], encoding="utf-8")
+        # Read-back verification: the restored inbox must verify cleanly.
+        self.verify()
+        return RestoreResult(restored=self.list_entries(),
+                             fingerprints=fingerprints, dry_run=False)
+
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="musings-inbox", description=__doc__)
@@ -752,6 +961,14 @@ def main(argv: list[str] | None = None) -> int:
                           help="show what would be imported without writing anything")
     sub.add_parser("doctor", help="health self-check: trailing newlines, md5 fingerprints, "
                                   "index consistency, file permissions")
+    p_backup = sub.add_parser("backup", help="create a timestamped backup of the whole inbox")
+    p_backup.add_argument("--output", dest="output", default=None,
+                          help="directory receiving the backup (default: ./backups)")
+    p_restore = sub.add_parser("restore", help="restore the inbox from a backup, after checking it")
+    p_restore.add_argument("--from", dest="source", required=True,
+                           help="backup directory created by `backup`")
+    p_restore.add_argument("--dry-run", dest="dry_run", action="store_true",
+                           help="validate the backup without writing anything")
     sub.add_parser("verify")
     args = ap.parse_args(argv)
     try:
@@ -831,6 +1048,20 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"doctor found {errors} error(s) and {warnings} warning(s)")
                 return 1
+        elif args.cmd == "backup":
+            result = inbox.backup(destination=args.output)
+            print(f"backup: {result.path}")
+            print(f"created: {result.created}")
+            print(f"entries: {result.entries}")
+            for name in sorted(result.fingerprints):
+                print(f"  {name} {result.fingerprints[name]}")
+        elif args.cmd == "restore":
+            result = inbox.restore(args.source, dry_run=args.dry_run)
+            if result.dry_run:
+                print("dry run: no changes written")
+            for entry in result.restored:
+                print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
+            print(f"restored: {len(result.restored)}")
         elif args.cmd == "verify":
             for name, digest in inbox.verify().items():
                 print(f"{name} {digest}")

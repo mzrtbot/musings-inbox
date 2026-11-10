@@ -484,6 +484,8 @@ def test_protocol_doc_covers_the_protocol():
         "#tags",                              # tag syntax
         "--since",                            # search date filter
         "--category",                         # search category filter
+        "backup",                             # timestamped backups
+        "restore",                            # restore with integrity checks
         "SKILL.md",                           # relation to the short edition
     ]:
         assert phrase in doc, f"protocol.md should document {phrase!r}"
@@ -925,3 +927,275 @@ def test_doctor_cli(tmp_path, capsys):
     assert "[error] trailing newline: facts.md does not end with a newline" in out
     assert "doctor found 1 error(s) and 0 warning(s)" in out
     assert "OK: inbox is healthy" not in out
+
+
+def _backup_manifest(backup_dir: Path) -> dict:
+    import json
+
+    return json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))
+
+
+def _resign_manifest(backup_dir: Path) -> None:
+    """Rewrite manifest.json fingerprints to match the files on disk.
+
+    Used to build backups that are internally consistent except for the
+    one defect the test wants to exercise (e.g. index/content mismatch).
+    """
+    import hashlib
+    import json
+
+    manifest = _backup_manifest(backup_dir)
+    manifest["files"] = {
+        name: hashlib.md5((backup_dir / name).read_bytes()).hexdigest()
+        for name in ("facts.md", "preferences.md", "experience.md",
+                     "materials.md", "index.md")
+    }
+    (backup_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def test_backup_creates_timestamped_dir_with_manifest(tmp_path):
+    import hashlib
+
+    box = _seeded_inbox(tmp_path)
+    when = datetime(2026, 10, 23, 9, 30, 15)
+    result = box.backup(tmp_path / "backups", now=when)
+    assert result.path == tmp_path / "backups" / "musings-inbox-backup-20261023-093015"
+    assert result.created == "2026-10-23 09:30"
+    assert result.entries == 3
+    manifest = _backup_manifest(result.path)
+    assert manifest["format"] == "musings-inbox-backup"
+    assert manifest["version"] == 1
+    assert manifest["created"] == "2026-10-23 09:30"
+    assert manifest["entries"] == 3
+    assert set(manifest["files"]) == {"facts.md", "preferences.md", "experience.md",
+                                      "materials.md", "index.md"}
+    for name in ("facts.md", "preferences.md", "experience.md",
+                 "materials.md", "index.md"):
+        copied = result.path / name
+        assert copied.read_bytes() == (box.root / name).read_bytes()
+        assert manifest["files"][name] == hashlib.md5(copied.read_bytes()).hexdigest()
+    assert result.fingerprints == manifest["files"]
+
+
+def test_backup_same_second_gets_suffix(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    when = datetime(2026, 10, 23, 9, 30, 15)
+    first = box.backup(tmp_path / "backups", now=when)
+    second = box.backup(tmp_path / "backups", now=when)
+    assert first.path.name == "musings-inbox-backup-20261023-093015"
+    assert second.path.name == "musings-inbox-backup-20261023-093015-2"
+    assert first.path != second.path
+    assert first.path.exists() and second.path.exists()
+
+
+def test_backup_requires_complete_inbox(tmp_path):
+    box = Inbox(tmp_path / "inbox")  # never initialized
+    try:
+        box.backup(tmp_path / "backups")
+    except ValueError as exc:
+        assert "missing inbox files" in str(exc)
+    else:
+        raise AssertionError("backup of an uninitialized inbox should raise")
+    assert not (tmp_path / "backups").exists()
+    # One file missing is enough to refuse.
+    seeded = _seeded_inbox(tmp_path)
+    (seeded.root / "materials.md").unlink()
+    try:
+        seeded.backup(tmp_path / "backups")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("backup with a missing file should raise")
+    assert not (tmp_path / "backups").exists()
+
+
+def test_restore_round_trip_keeps_ids_and_timestamps(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    result = src.backup(tmp_path / "backups", now=datetime(2026, 10, 23, 9, 30, 15))
+    dst = Inbox(tmp_path / "dst")
+    restored = dst.restore(result.path)
+    assert not restored.dry_run
+    assert [(e.entry_id, e.category, e.text, e.timestamp) for e in restored.restored] == [
+        ("20261022-01", "fact", "The workshop opens at nine. #routine", "2026-10-22 09:00"),
+        ("20261023-01", "preference", "Quiet mornings before the kettle boils.", "2026-10-23 08:00"),
+        ("20261023-02", "experience", "Fixed a glued index line by splitting it.", "2026-10-23 09:30"),
+    ]
+    assert dst.verify()
+    assert [e.text for e in dst.list_entries()] == [e.text for e in src.list_entries()]
+    assert restored.fingerprints == result.fingerprints
+
+
+def test_restore_replaces_current_contents(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    result = src.backup(tmp_path / "backups", now=datetime(2026, 10, 23, 9, 30, 15))
+    dst = Inbox(tmp_path / "dst")
+    dst.add("fact", "A later entry that must not survive the restore.",
+            now=datetime(2026, 10, 24, 10, 0))
+    assert len(dst.list_entries()) == 1
+    restored = dst.restore(result.path)
+    assert len(restored.restored) == 3
+    assert [e.text for e in dst.list_entries()] == [e.text for e in src.list_entries()]
+    assert dst.verify()
+
+
+def test_restore_dry_run_writes_nothing(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    result = src.backup(tmp_path / "backups", now=datetime(2026, 10, 23, 9, 30, 15))
+    dst_root = tmp_path / "dst"
+    dst = Inbox(dst_root)
+    restored = dst.restore(result.path, dry_run=True)
+    assert restored.dry_run and len(restored.restored) == 3
+    assert restored.restored[0].entry_id == "20261022-01"  # the entry it would restore
+    assert not dst_root.exists()
+    # Dry run against an inbox that already holds the entries: no writes.
+    before = src.verify()
+    again = src.restore(result.path, dry_run=True)
+    assert len(again.restored) == 3
+    assert src.verify() == before
+
+
+def test_restore_rejects_tampered_backup_and_writes_nothing(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    result = src.backup(tmp_path / "backups", now=datetime(2026, 10, 23, 9, 30, 15))
+    facts = result.path / "facts.md"
+    with facts.open("a", encoding="utf-8") as fh:
+        fh.write("- [20261024-99] 2026-10-24 09:00 — Tampered entry.\n")
+    dst_root = tmp_path / "dst"
+    dst = Inbox(dst_root)
+    try:
+        dst.restore(result.path)
+    except ValueError as exc:
+        assert "does not match the manifest fingerprint" in str(exc)
+    else:
+        raise AssertionError("restore of a tampered backup should raise")
+    assert not dst_root.exists()
+
+
+def test_restore_rejects_missing_manifest_and_missing_file(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    result = src.backup(tmp_path / "backups", now=datetime(2026, 10, 23, 9, 30, 15))
+    dst = Inbox(tmp_path / "dst")
+    (result.path / "manifest.json").unlink()
+    try:
+        dst.restore(result.path)
+    except ValueError as exc:
+        assert "manifest.json is missing" in str(exc)
+    else:
+        raise AssertionError("restore without a manifest should raise")
+    assert not (tmp_path / "dst").exists()
+    # A backup missing one inbox file fails too.
+    result2 = src.backup(tmp_path / "backups", now=datetime(2026, 10, 23, 9, 31, 0))
+    (result2.path / "materials.md").unlink()
+    try:
+        dst.restore(result2.path)
+    except ValueError as exc:
+        assert "materials.md is missing" in str(exc)
+    else:
+        raise AssertionError("restore missing a file should raise")
+    assert not (tmp_path / "dst").exists()
+    # A path that is not a backup directory at all.
+    try:
+        dst.restore(tmp_path / "no-such-backup")
+    except ValueError as exc:
+        assert "not found" in str(exc)
+    else:
+        raise AssertionError("restore of a missing directory should raise")
+
+
+def test_restore_rejects_index_mismatch(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    result = src.backup(tmp_path / "backups", now=datetime(2026, 10, 23, 9, 30, 15))
+    index = result.path / "index.md"
+    lines = [ln for ln in index.read_text(encoding="utf-8").splitlines()
+             if "20261022-01" not in ln]
+    index.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _resign_manifest(result.path)  # fingerprints now match; only the index is wrong
+    dst = Inbox(tmp_path / "dst")
+    try:
+        dst.restore(result.path)
+    except ValueError as exc:
+        assert "index/content mismatch" in str(exc) and "20261022-01" in str(exc)
+    else:
+        raise AssertionError("restore with an inconsistent index should raise")
+    assert not (tmp_path / "dst").exists()
+
+
+def test_restore_rejects_unknown_format_and_version(tmp_path):
+    import json
+
+    src = _seeded_inbox(tmp_path)
+    result = src.backup(tmp_path / "backups", now=datetime(2026, 10, 23, 9, 30, 15))
+    dst = Inbox(tmp_path / "dst")
+    manifest_path = result.path / "manifest.json"
+    manifest = _backup_manifest(result.path)
+    manifest["format"] = "some-other-backup"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                             encoding="utf-8")
+    try:
+        dst.restore(result.path)
+    except ValueError as exc:
+        assert "unknown backup format" in str(exc)
+    else:
+        raise AssertionError("restore with an unknown format should raise")
+    manifest["format"] = "musings-inbox-backup"
+    manifest["version"] = 99
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                             encoding="utf-8")
+    try:
+        dst.restore(result.path)
+    except ValueError as exc:
+        assert "unsupported backup version" in str(exc)
+    else:
+        raise AssertionError("restore with an unsupported version should raise")
+    assert not (tmp_path / "dst").exists()
+
+
+def test_restore_rejects_symlinked_backup_file(tmp_path):
+    src = _seeded_inbox(tmp_path)
+    result = src.backup(tmp_path / "backups", now=datetime(2026, 10, 23, 9, 30, 15))
+    facts = result.path / "facts.md"
+    facts.unlink()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("# Facts\n", encoding="utf-8")
+    facts.symlink_to(outside)
+    dst = Inbox(tmp_path / "dst")
+    try:
+        dst.restore(result.path)
+    except ValueError as exc:
+        assert "symlink" in str(exc)
+    else:
+        raise AssertionError("restore with a symlinked backup file should raise")
+    assert not (tmp_path / "dst").exists()
+
+
+def test_backup_restore_cli(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    src = _seeded_inbox(tmp_path, name="inbox")
+    root = str(tmp_path / "inbox")
+    backups = str(tmp_path / "backups")
+    assert main(["--root", root, "backup", "--output", backups]) == 0
+    out = capsys.readouterr().out
+    assert "backup: " in out and "musings-inbox-backup-" in out
+    assert "entries: 3" in out
+    backup_dir = next((tmp_path / "backups").iterdir())
+    dst_root = str(tmp_path / "dst")
+    assert main(["--root", dst_root, "restore", "--from", str(backup_dir), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "dry run: no changes written" in out
+    assert "restored: 3" in out
+    assert not (tmp_path / "dst").exists()
+    assert main(["--root", dst_root, "restore", "--from", str(backup_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "restored: 3" in out
+    assert "20261023-02" in out
+    assert Inbox(tmp_path / "dst").verify()
+    # A tampered backup fails through the CLI with exit code 1 and no restore.
+    facts = backup_dir / "facts.md"
+    with facts.open("a", encoding="utf-8") as fh:
+        fh.write("- [20261024-99] 2026-10-24 09:00 — Tampered entry.\n")
+    assert main(["--root", str(tmp_path / "dst2"), "restore", "--from", str(backup_dir)]) == 1
+    assert "error:" in capsys.readouterr().err
+    assert not (tmp_path / "dst2").exists()

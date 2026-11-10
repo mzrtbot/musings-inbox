@@ -114,11 +114,15 @@ disk. Additional guards:
 ## 9. Reference implementation
 
 `src/musings_inbox/inbox.py` implements `init` / `add` / `search` / `list` /
-`stats` / `export` / `import` / `verify` / `doctor` with the newline, read-back, whitelist, and
+`stats` / `export` / `import` / `verify` / `doctor` / `backup` / `restore` with the newline, read-back, whitelist, and
 traversal rules enforced in code, covered by `tests/test_inbox.py`.
 `doctor` is a read-only health self-check (trailing newlines, md5 fingerprints,
 index consistency, entry/index line formats, duplicate IDs, file permissions)
 that never writes and exits 1 when any error is found.
+`backup` writes a timestamped copy of the whole inbox plus a `manifest.json`
+of md5 fingerprints; `restore` validates a backup completely (manifest,
+fingerprints, entry and index formats, index consistency) before replacing
+the inbox with it, and `--dry-run` validates without writing anything.
 `templates/` (English) and `templates/zh/` (Chinese) hold drop-in starter
 files. Agents may call the CLI or follow this protocol directly with their own
 file tools.

@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-10
+
+### Added
+- `backup` / `restore` commands: `backup` writes a timestamped directory (`musings-inbox-backup-YYYYMMDD-HHMMSS`, a `-2`/`-3` suffix when two backups land in the same second) holding a copy of every inbox file plus a `manifest.json` with the backup format version, creation time, md5 fingerprint of each file, and the entry count; the receiving directory is `--output` (default `./backups`). `restore --from <backup>` fully validates the backup before writing anything — manifest present and well-formed at the supported format version, every file present inside the backup directory and not a symlink, every md5 matching the manifest, every entry line and index row well-formed, and the index and category files holding the same set of IDs — then replaces the inbox contents with the backup, keeping the backed-up timestamps and entry IDs, and verifies the restored inbox by read-back. `--dry-run` validates and reports the entries it would restore without writing. A failed validation raises with every problem listed and writes nothing. Library methods `Inbox.backup()` / `Inbox.restore()` return the backup path, creation time, fingerprints, and entry count / the restored entries and fingerprints.
+
 ## [0.2.3] - 2026-11-09
 
 ### Added
