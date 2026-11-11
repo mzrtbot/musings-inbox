@@ -52,6 +52,8 @@ fact: 5
 preference: 2
 experience: 3
 material: 2
+per month:
+  2026-10: 12
 earliest: 20261020-01 2026-10-20 09:30 [fact] Ada opens her pottery workshop at nine every morning. #routine
 latest: 20261024-03 2026-10-24 11:00 [fact] 午后沿河散步是放空的好办法。 #灵感
 total characters: 663

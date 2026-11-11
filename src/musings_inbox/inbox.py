@@ -128,6 +128,7 @@ class Stats:
     earliest: Entry | None
     latest: Entry | None
     total_chars: int
+    by_month: dict[str, int]
 
 
 @dataclass
@@ -402,26 +403,48 @@ class Inbox:
         entries.sort(key=lambda e: (e.timestamp, e.entry_id))
         return entries
 
-    def stats(self) -> Stats:
+    def stats(self, since: str | None = None, until: str | None = None) -> Stats:
         """Summarize the inbox: per-category counts, earliest/latest
-        entries, and total entry-text characters.
+        entries, total entry-text characters, and per-month counts.
 
         ``by_category`` always lists every known category (zero when
-        empty) so callers can rely on the keys. ``earliest``/``latest``
-        use the same chronological order as :meth:`list_entries` and
-        are ``None`` for an empty inbox. ``total_chars`` counts entry
-        text only, not IDs, timestamps, or Markdown markup.
+        empty) so callers can rely on the keys. ``by_month`` counts
+        entries per ``YYYY-MM`` month, in chronological order; it is
+        empty for an empty (or empty-in-range) inbox. ``earliest`` /
+        ``latest`` use the same chronological order as
+        :meth:`list_entries` and are ``None`` for an empty inbox.
+        ``total_chars`` counts entry text only, not IDs, timestamps, or
+        Markdown markup.
+
+        ``since`` / ``until`` (``YYYY-MM-DD``) restrict the summary to
+        entries dated on or after ``since`` / on or before ``until`` —
+        both boundary days are included. A range with ``since`` after
+        ``until`` raises ``ValueError``.
         """
-        entries = self.list_entries()
+        if since is not None:
+            _validate_date(since)
+        if until is not None:
+            _validate_date(until)
+        if since is not None and until is not None and since > until:
+            raise ValueError(f"invalid date range: since {since!r} is after until {until!r}")
+        entries = [
+            e for e in self.list_entries()
+            if (since is None or e.timestamp[:10] >= since)
+            and (until is None or e.timestamp[:10] <= until)
+        ]
         by_category = {cat: 0 for cat in CATEGORIES}
+        by_month: dict[str, int] = {}
         for entry in entries:
             by_category[entry.category] += 1
+            month = entry.timestamp[:7]
+            by_month[month] = by_month.get(month, 0) + 1
         return Stats(
             total=len(entries),
             by_category=by_category,
             earliest=entries[0] if entries else None,
             latest=entries[-1] if entries else None,
             total_chars=sum(len(entry.text) for entry in entries),
+            by_month=by_month,
         )
 
     def export(
@@ -942,7 +965,12 @@ def main(argv: list[str] | None = None) -> int:
     p_list.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
     p_list.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")
     p_list.add_argument("--tag", dest="tag", default=None, help="filter by #tag in entry text")
-    sub.add_parser("stats", help="show per-category counts, earliest/latest entries, total characters")
+    p_stats = sub.add_parser("stats", help="show per-category counts, earliest/latest entries, total characters, "
+                                            "and per-month counts, optionally within a date range")
+    p_stats.add_argument("--since", dest="since", default=None,
+                         help="only entries on or after this date, YYYY-MM-DD")
+    p_stats.add_argument("--until", dest="until", default=None,
+                         help="only entries on or before this date, YYYY-MM-DD")
     p_export = sub.add_parser("export", help="export the inbox as one Markdown document or JSON array")
     p_export.add_argument("--format", dest="format", default="markdown", choices=["markdown", "json"],
                           help="output format (default: markdown)")
@@ -990,10 +1018,22 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("no entries")
         elif args.cmd == "stats":
-            stats = inbox.stats()
+            stats = inbox.stats(since=args.since, until=args.until)
+            if args.since is not None and args.until is not None:
+                print(f"range: {args.since} to {args.until}")
+            elif args.since is not None:
+                print(f"range: from {args.since}")
+            elif args.until is not None:
+                print(f"range: until {args.until}")
             print(f"total: {stats.total}")
             for cat in CATEGORIES:
                 print(f"{cat}: {stats.by_category[cat]}")
+            if stats.by_month:
+                print("per month:")
+                for month, count in stats.by_month.items():
+                    print(f"  {month}: {count}")
+            else:
+                print("per month: none")
             if stats.earliest is not None:
                 e = stats.earliest
                 print(f"earliest: {e.entry_id} {e.timestamp} [{e.category}] {e.text}")

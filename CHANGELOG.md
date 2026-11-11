@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-11-12
+
+### Added
+- `stats` date ranges and per-month counts: `stats --since YYYY-MM-DD` / `--until YYYY-MM-DD` restrict the summary to entries dated on or after `since` / on or before `until` (both boundary days included), and every `stats` run now also prints per-month counts (`per month:` with one `YYYY-MM: N` line per month, or `per month: none` for an empty inbox or range). A filtered run prints its range first (`range: <since> to <until>`, or `range: from <since>` / `range: until <until>` when only one bound is given); earliest/latest entries, per-category counts, and total characters are all computed within the range. Library method `Inbox.stats(since=..., until=...)` gains the same parameters plus a `by_month` field on `Stats`; invalid dates and a `since` after `until` raise `ValueError`.
+
 ## [0.2.4] - 2026-11-10
 
 ### Added

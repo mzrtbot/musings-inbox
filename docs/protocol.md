@@ -123,6 +123,9 @@ that never writes and exits 1 when any error is found.
 of md5 fingerprints; `restore` validates a backup completely (manifest,
 fingerprints, entry and index formats, index consistency) before replacing
 the inbox with it, and `--dry-run` validates without writing anything.
+`stats` accepts `--since` / `--until` (YYYY-MM-DD, boundary days included)
+to summarize a date range, and always reports per-month counts
+(`YYYY-MM: N`) alongside the per-category counts.
 `templates/` (English) and `templates/zh/` (Chinese) hold drop-in starter
 files. Agents may call the CLI or follow this protocol directly with their own
 file tools.

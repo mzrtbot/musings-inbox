@@ -142,6 +142,113 @@ def test_stats_cli_prints_summary_and_empty(tmp_path, capsys):
     assert "total characters: 18" in out
 
 
+def test_stats_since_until_filters_and_month_counts(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "First day note.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("fact", "Second day note.", now=datetime(2026, 10, 23, 9, 0))
+    box.add("preference", "Second day preference.", now=datetime(2026, 10, 23, 8, 0))
+    box.add("material", "November note here.", now=datetime(2026, 11, 5, 10, 0))
+    stats = box.stats()
+    assert stats.total == 4
+    assert stats.by_month == {"2026-10": 3, "2026-11": 1}
+    assert stats.earliest.entry_id == "20261022-01"
+    assert stats.latest.entry_id == "20261105-01"
+    assert stats.total_chars == 15 + 16 + 22 + 19
+    # --since keeps the boundary day; the 08:00 preference is earliest in range.
+    ranged = box.stats(since="2026-10-23")
+    assert ranged.total == 3
+    assert ranged.by_month == {"2026-10": 2, "2026-11": 1}
+    assert ranged.earliest.entry_id == "20261023-02"
+    assert ranged.latest.entry_id == "20261105-01"
+    assert ranged.total_chars == 16 + 22 + 19
+    # --until keeps its boundary day too.
+    ranged = box.stats(until="2026-10-23")
+    assert ranged.total == 3
+    assert ranged.by_month == {"2026-10": 3}
+    assert ranged.earliest.entry_id == "20261022-01"
+    assert ranged.latest.entry_id == "20261023-01"
+    assert ranged.total_chars == 15 + 16 + 22
+    # Both bounds on one day: that day only.
+    ranged = box.stats(since="2026-10-23", until="2026-10-23")
+    assert ranged.total == 2
+    assert ranged.by_month == {"2026-10": 2}
+    assert ranged.by_category == {"fact": 1, "preference": 1, "experience": 0, "material": 0}
+    # A range with no entries reports zeros, not an error.
+    ranged = box.stats(since="2027-01-01")
+    assert ranged.total == 0
+    assert ranged.by_month == {}
+    assert ranged.by_category == {"fact": 0, "preference": 0, "experience": 0, "material": 0}
+    assert ranged.earliest is None and ranged.latest is None
+    assert ranged.total_chars == 0
+
+
+def test_stats_range_validation(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "First day note.", now=datetime(2026, 10, 22, 9, 0))
+    for bad in ("2026-13-01", "2026-10-32", "22-10-2026", "not-a-date"):
+        try:
+            box.stats(since=bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"stats(since={bad!r}) should raise ValueError")
+        try:
+            box.stats(until=bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"stats(until={bad!r}) should raise ValueError")
+    try:
+        box.stats(since="2026-10-23", until="2026-10-22")
+    except ValueError as exc:
+        assert "after" in str(exc)
+    else:
+        raise AssertionError("stats(since > until) should raise ValueError")
+
+
+def test_stats_cli_since_until_and_months(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "First day note.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("fact", "Second day note.", now=datetime(2026, 10, 23, 9, 0))
+    box.add("material", "November note here.", now=datetime(2026, 11, 5, 10, 0))
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "stats"]) == 0
+    out = capsys.readouterr().out
+    assert "total: 3" in out
+    assert "per month:\n  2026-10: 2\n  2026-11: 1" in out
+    assert "range:" not in out
+    assert main(["--root", root, "stats", "--since", "2026-10-23", "--until", "2026-10-23"]) == 0
+    out = capsys.readouterr().out
+    assert "range: 2026-10-23 to 2026-10-23" in out
+    assert "total: 1" in out
+    assert "per month:\n  2026-10: 1" in out
+    assert "earliest: 20261023-01 2026-10-23 09:00 [fact] Second day note." in out
+    assert main(["--root", root, "stats", "--since", "2026-11-01"]) == 0
+    out = capsys.readouterr().out
+    assert "range: from 2026-11-01" in out
+    assert "total: 1" in out and "per month:\n  2026-11: 1" in out
+    assert main(["--root", root, "stats", "--until", "2026-10-22"]) == 0
+    out = capsys.readouterr().out
+    assert "range: until 2026-10-22" in out
+    assert "total: 1" in out and "per month:\n  2026-10: 1" in out
+    # An invalid range exits 1 with an error, like the other commands.
+    assert main(["--root", root, "stats", "--since", "2026-11-06", "--until", "2026-11-05"]) == 1
+    err = capsys.readouterr().err
+    assert "error: invalid date range" in err
+
+
+def test_stats_cli_empty_inbox_shows_no_months(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "stats"]) == 0
+    out = capsys.readouterr().out
+    assert "total: 0" in out
+    assert "per month: none" in out
+
+
 def test_export_markdown_chronological_and_filtered(tmp_path):
     box = Inbox(tmp_path / "inbox")
     box.add("fact", "First day note.", now=datetime(2026, 10, 22, 9, 0))
