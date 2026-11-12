@@ -295,6 +295,47 @@ def test_export_empty_inbox_and_bad_args(tmp_path):
         raise AssertionError(f"should reject {kwargs}")
 
 
+def test_export_html_offline_toc_anchors_and_escaping(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "First day note.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("preference", "Second day preference.", now=datetime(2026, 10, 23, 8, 0))
+    box.add("fact", '<script>alert(1)</script> & "quotes"', now=datetime(2026, 10, 23, 9, 0))
+    doc = box.export(format="html")
+    assert doc.startswith("<!DOCTYPE html>\n")
+    assert doc.rstrip().endswith("</html>")
+    assert "total: 3" in doc
+    # Fully offline: no scripts, no external resources or links.
+    assert "<script" not in doc
+    assert "http://" not in doc and "https://" not in doc
+    assert "<style>" in doc
+    # Contents list links to one section per category, with counts.
+    assert '<a href="#category-fact">fact (2)</a>' in doc
+    assert '<a href="#category-preference">preference (1)</a>' in doc
+    assert '<section id="category-fact">' in doc
+    assert '<section id="category-preference">' in doc
+    assert '<section id="category-experience">' not in doc
+    # Entries keep their IDs and chronological order inside their section.
+    assert '<li id="entry-20261022-01">' in doc
+    assert doc.index("First day note.") < doc.index("&lt;script&gt;alert(1)&lt;/script&gt;")
+    # Entry text is escaped, never emitted raw.
+    assert "<script>alert(1)</script>" not in doc
+    assert "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;quotes&quot;" in doc
+    # Filters apply to HTML too.
+    day23 = box.export(format="html", category="fact", on_date="2026-10-23")
+    assert "total: 1" in day23 and "Second day preference." not in day23
+    assert "category-preference" not in day23
+
+
+def test_export_html_empty_inbox(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    doc = box.export(format="html")
+    assert doc.startswith("<!DOCTYPE html>\n")
+    assert "total: 0" in doc
+    assert "<p>no entries</p>" in doc
+    assert "<section" not in doc
+    assert "<script" not in doc
+
+
 def test_export_cli_stdout_and_output_file(tmp_path, capsys):
     import json
 
@@ -311,6 +352,14 @@ def test_export_cli_stdout_and_output_file(tmp_path, capsys):
     assert "exported:" in capsys.readouterr().out
     assert out_file.read_text(encoding="utf-8").startswith("# Export\n\ntotal: 1\n")
     assert "CLI-exported entry." in out_file.read_text(encoding="utf-8")
+    html_file = tmp_path / "export.html"
+    assert main(["--root", root, "export", "--format", "html", "--output", str(html_file)]) == 0
+    assert "exported:" in capsys.readouterr().out
+    html_doc = html_file.read_text(encoding="utf-8")
+    assert html_doc.startswith("<!DOCTYPE html>\n")
+    assert "CLI-exported entry." in html_doc
+    assert main(["--root", root, "export", "--format", "html"]) == 0
+    assert capsys.readouterr().out.startswith("<!DOCTYPE html>\n")
 
 
 def test_rejects_empty_and_unknown(tmp_path):

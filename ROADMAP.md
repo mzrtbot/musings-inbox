@@ -14,9 +14,9 @@
 - `doctor`: inbox health self-check (trailing newlines, md5 fingerprints, index consistency, file permissions) — read-only, exits 1 on any error.
 - `backup` / `restore`: timestamped backups (all five files plus a `manifest.json` of md5 fingerprints) and restore with full integrity checks before any write, plus `--dry-run` validation.
 - `stats` date ranges (`--since` / `--until`) and per-month counts.
+- `export --format html`: a single offline-readable HTML page (table of contents, category anchors, escaped entry text).
 
 ## Next (0.3.x)
-- `export` to a single offline-readable HTML file (table of contents, category anchors).
 - Config file support (`~/.config/musings-inbox/config.toml`: default `--root`, default category).
 - `search --regex` and `--case-sensitive`.
 - `add` with multi-line input (stdin / editor) and batch append.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import re
 import stat
@@ -453,20 +454,76 @@ class Inbox:
         category: str | None = None,
         on_date: str | None = None,
     ) -> str:
-        """Export the inbox as one Markdown document or one JSON array.
+        """Export the inbox as one Markdown document, JSON array, or HTML page.
 
-        ``format`` is ``markdown`` (default) or ``json``. The same
+        ``format`` is ``markdown`` (default), ``json``, or ``html``. The same
         ``category`` / ``on_date`` filters as :meth:`list_entries` apply,
         so callers get the same validation and chronological order.
         Markdown is one document with a header, a total line, and one
         ``- [ID] timestamp [category] text`` line per entry; JSON is a
         list of ``entry_id`` / ``category`` / ``text`` / ``timestamp``
-        objects. An empty inbox exports as a Markdown header with
-        ``no entries`` or as ``[]`` — never as an error.
+        objects; HTML is one self-contained offline-readable page with a
+        table of contents, one anchored section per category, and every
+        entry grouped under its category (inline styles only, no external
+        resources, entry text HTML-escaped). An empty inbox exports as a
+        Markdown header with ``no entries``, as ``[]``, or as an HTML page
+        with ``no entries`` — never as an error.
         """
-        if format not in ("markdown", "json"):
-            raise ValueError(f"unknown export format: {format!r} (choose from markdown, json)")
+        if format not in ("markdown", "json", "html"):
+            raise ValueError(f"unknown export format: {format!r} (choose from markdown, json, html)")
         entries = self.list_entries(category=category, on_date=on_date)
+        if format == "html":
+            by_category: dict[str, list[Entry]] = {}
+            for entry in entries:
+                by_category.setdefault(entry.category, []).append(entry)
+            parts = [
+                "<!DOCTYPE html>",
+                '<html lang="en">',
+                "<head>",
+                '<meta charset="utf-8">',
+                '<meta name="viewport" content="width=device-width, initial-scale=1">',
+                "<title>Musings Inbox Export</title>",
+                "<style>",
+                "body{font-family:system-ui,sans-serif;max-width:44em;margin:2em auto;padding:0 1em;line-height:1.5}",
+                ".meta{color:#666;font-size:.9em}",
+                "nav ul{list-style:none;padding-left:0}",
+                "li{margin:.4em 0}",
+                "</style>",
+                "</head>",
+                "<body>",
+                "<h1>Musings Inbox Export</h1>",
+                f"<p>total: {len(entries)}</p>",
+            ]
+            if entries:
+                parts.append("<nav><h2>Contents</h2><ul>")
+                for cat in CATEGORIES:
+                    if cat in by_category:
+                        parts.append(
+                            f'<li><a href="#category-{html.escape(cat)}">'
+                            f"{html.escape(cat)} ({len(by_category[cat])})</a></li>"
+                        )
+                parts.append("</ul></nav>")
+                for cat in CATEGORIES:
+                    grouped = by_category.get(cat)
+                    if not grouped:
+                        continue
+                    parts.append(f'<section id="category-{html.escape(cat)}">')
+                    parts.append(f"<h2>{html.escape(cat)} ({len(grouped)})</h2>")
+                    parts.append("<ul>")
+                    for entry in grouped:
+                        parts.append(
+                            f'<li id="entry-{html.escape(entry.entry_id)}">'
+                            f'<span class="meta">[{html.escape(entry.entry_id)}] '
+                            f"{html.escape(entry.timestamp)}</span> "
+                            f"{html.escape(entry.text)}</li>"
+                        )
+                    parts.append("</ul>")
+                    parts.append("</section>")
+            else:
+                parts.append("<p>no entries</p>")
+            parts.append("</body>")
+            parts.append("</html>")
+            return "\n".join(parts) + "\n"
         if format == "json":
             payload = [
                 {
@@ -971,8 +1028,8 @@ def main(argv: list[str] | None = None) -> int:
                          help="only entries on or after this date, YYYY-MM-DD")
     p_stats.add_argument("--until", dest="until", default=None,
                          help="only entries on or before this date, YYYY-MM-DD")
-    p_export = sub.add_parser("export", help="export the inbox as one Markdown document or JSON array")
-    p_export.add_argument("--format", dest="format", default="markdown", choices=["markdown", "json"],
+    p_export = sub.add_parser("export", help="export the inbox as one Markdown document, JSON array, or HTML page")
+    p_export.add_argument("--format", dest="format", default="markdown", choices=["markdown", "json", "html"],
                           help="output format (default: markdown)")
     p_export.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
     p_export.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")

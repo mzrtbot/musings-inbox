@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-12
+
+### Added
+- `export --format html`: one self-contained, offline-readable HTML page with a table of contents, one anchored section (`#category-<name>`) per category present, and every entry grouped under its category with its ID and timestamp (each entry carries an `entry-<id>` anchor). Inline styles only — no scripts, no external resources, no network calls — and entry text is HTML-escaped, so exported entries can never inject markup. The same `--category` / `--date` filters as the other export formats apply; an empty inbox exports as a valid page with `no entries`. Library method `Inbox.export(format="html")` returns the page as a string.
+
 ## [0.2.5] - 2026-11-12
 
 ### Added
