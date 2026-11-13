@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-11-13
+
+### Added
+- Config file support: `~/.config/musings-inbox/config.toml` (or `$XDG_CONFIG_HOME/musings-inbox/config.toml`) may set `root` (default `--root`) and `default_category` (default `--type` for `add`), so repeated invocations need no flags. Precedence is CLI flag, then config file, then the built-in default (`./inbox` / `--type` required). `--config <path>` reads a different file (a missing `--config` file is an error; a missing default file simply means no config). A present config must parse as TOML, hold only the two known keys, and give `root` a non-empty string and `default_category` a known category — unknown keys, bad values, and malformed files all fail with the file named. `~` in `root` is expanded. TOML is read with the standard library `tomllib` on Python 3.11+, `tomli` when installed, or a minimal flat `key = "value"` parser on Python 3.10 with no third-party package, so the core stays dependency-free. Library functions `load_config()` / `default_config_path()`.
+
 ## [0.2.6] - 2026-11-12
 
 ### Added

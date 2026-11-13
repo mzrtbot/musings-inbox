@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import html
 import json
+import os
 import re
 import stat
 import sys
@@ -276,6 +277,119 @@ def _parse_import_markdown(raw: str, category: str | None) -> list[tuple[str, st
     if errors:
         raise ValueError("invalid import file:\n" + "\n".join(errors))
     return candidates
+
+
+CONFIG_DIR_NAME = "musings-inbox"
+CONFIG_FILE_NAME = "config.toml"
+# The only keys a config file may hold. Anything else is rejected, so a
+# typo (e.g. "defualt_category") fails loudly instead of being silently
+# ignored and leaving the user wondering why the default never applied.
+CONFIG_KEYS = ("root", "default_category")
+
+
+def default_config_path() -> Path:
+    """Where the config file lives when no --config is given.
+
+    ``$XDG_CONFIG_HOME/musings-inbox/config.toml`` when XDG_CONFIG_HOME
+    is set, otherwise ``~/.config/musings-inbox/config.toml``.
+    """
+    base = os.environ.get("XDG_CONFIG_HOME")
+    if base:
+        return Path(base).expanduser() / CONFIG_DIR_NAME / CONFIG_FILE_NAME
+    return Path.home() / ".config" / CONFIG_DIR_NAME / CONFIG_FILE_NAME
+
+
+def _parse_config_fallback(raw: str) -> dict:
+    """Minimal parser for the flat config format, used only when neither
+    ``tomllib`` (Python 3.11+) nor ``tomli`` is importable — the core
+    stays dependency-free, so the config must still load on Python 3.10
+    with no third-party package installed.
+
+    Accepts only flat ``key = "value"`` lines (single or double quotes),
+    blank lines, and ``#`` comments. Tables, arrays, and multi-line
+    strings are rejected with a clear error instead of being half-parsed.
+    """
+    data: dict = {}
+    for lineno, ln in enumerate(raw.splitlines(), start=1):
+        stripped = ln.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = re.fullmatch(
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\"[^\"]*\"|'[^']*')\s*(#.*)?$", stripped
+        )
+        if match is None:
+            raise ValueError(
+                f"config line {lineno}: cannot parse {ln!r} "
+                "(the fallback parser only accepts flat key = \"value\" lines; "
+                "install tomli or use Python 3.11+ for full TOML)"
+            )
+        key, quoted, _comment = match.groups()
+        value = quoted[1:-1]
+        if quoted.startswith('"'):
+            # Best effort at basic-string escapes (\" and \\); a plain
+            # path needs no unescaping at all.
+            value = value.replace('\\"', '"').replace("\\\\", "\\")
+        data[key] = value
+    return data
+
+
+def load_config(path: str | Path | None = None, *, explicit: bool = False) -> dict:
+    """Load the config file and return the keys it sets (possibly none).
+
+    ``path`` overrides the default location; ``explicit`` marks a
+    user-supplied ``--config``, whose absence is an error, while a
+    missing default file simply means "no config" and returns ``{}``.
+    A present file must parse as TOML, hold only known keys, and give
+    ``root`` a non-empty string and ``default_category`` a known
+    category — anything else raises ``ValueError`` with the file named.
+    """
+    p = Path(path).expanduser() if path is not None else default_config_path()
+    if not p.exists():
+        if explicit:
+            raise ValueError(f"config file not found: {p}")
+        return {}
+    if p.is_dir():
+        raise ValueError(f"config path is a directory: {p}")
+    raw = p.read_text(encoding="utf-8")
+    parser = None
+    try:
+        import tomllib
+
+        parser = tomllib
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+
+            parser = tomllib
+        except ModuleNotFoundError:
+            parser = None
+    if parser is not None:
+        try:
+            data = parser.loads(raw)
+        except Exception as exc:  # TOMLDecodeError from either library
+            raise ValueError(f"invalid config file {p}: {exc}") from None
+    else:
+        try:
+            data = _parse_config_fallback(raw)
+        except ValueError as exc:
+            raise ValueError(f"invalid config file {p}: {exc}") from None
+    if not isinstance(data, dict):
+        raise ValueError(f"invalid config file {p}: expected a TOML table at the top level")
+    unknown = sorted(set(data) - set(CONFIG_KEYS))
+    if unknown:
+        raise ValueError(
+            f"invalid config file {p}: unknown keys: {unknown} (known: {sorted(CONFIG_KEYS)})"
+        )
+    root = data.get("root")
+    if root is not None and (not isinstance(root, str) or not root.strip()):
+        raise ValueError(f"invalid config file {p}: 'root' must be a non-empty string")
+    category = data.get("default_category")
+    if category is not None and category not in CATEGORIES:
+        raise ValueError(
+            f"invalid config file {p}: 'default_category' must be one of "
+            f"{sorted(CATEGORIES)}, got {category!r}"
+        )
+    return {key: data[key] for key in CONFIG_KEYS if key in data}
 
 
 class Inbox:
@@ -1004,11 +1118,15 @@ class Inbox:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="musings-inbox", description=__doc__)
-    ap.add_argument("--root", default="inbox", help="inbox directory (default: ./inbox)")
+    ap.add_argument("--root", default=None,
+                    help="inbox directory (default: from the config file, else ./inbox)")
+    ap.add_argument("--config", default=None,
+                    help="config file to read (default: ~/.config/musings-inbox/config.toml)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init")
     p_add = sub.add_parser("add")
-    p_add.add_argument("--type", dest="category", required=True, choices=sorted(CATEGORIES))
+    p_add.add_argument("--type", dest="category", default=None, choices=sorted(CATEGORIES),
+                       help="entry category (default: default_category from the config file)")
     p_add.add_argument("--text", required=True)
     p_search = sub.add_parser("search")
     p_search.add_argument("query")
@@ -1057,12 +1175,22 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("verify")
     args = ap.parse_args(argv)
     try:
-        inbox = Inbox(args.root)
+        # Precedence, highest first: CLI flag, config file, built-in
+        # default. A missing default config file is fine (no config);
+        # a missing --config file is an error (the user asked for it).
+        config = load_config(args.config, explicit=args.config is not None)
+        root = args.root or config.get("root") or "inbox"
+        inbox = Inbox(root)
         if args.cmd == "init":
             inbox.init()
             print(f"initialized: {inbox.root}")
         elif args.cmd == "add":
-            entry = inbox.add(args.category, args.text)
+            category = args.category or config.get("default_category")
+            if category is None:
+                raise ValueError(
+                    "add needs --type (or set default_category in the config file)"
+                )
+            entry = inbox.add(category, args.text)
             print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
         elif args.cmd == "search":
             hits = inbox.search(args.query, tag=args.tag, category=args.category, since=args.since)

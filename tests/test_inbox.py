@@ -1355,3 +1355,148 @@ def test_backup_restore_cli(tmp_path, capsys):
     assert main(["--root", str(tmp_path / "dst2"), "restore", "--from", str(backup_dir)]) == 1
     assert "error:" in capsys.readouterr().err
     assert not (tmp_path / "dst2").exists()
+
+
+def _write_config(home: Path, text: str, *, xdg: Path | None = None) -> Path:
+    """Write a config file under a fake HOME (or XDG_CONFIG_HOME) and return its path."""
+    base = xdg if xdg is not None else home / ".config"
+    path = base / "musings-inbox" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_config_default_root_and_category(tmp_path, monkeypatch, capsys):
+    from musings_inbox.inbox import main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "my-inbox"
+    _write_config(tmp_path, f'root = "{root}"\ndefault_category = "fact"\n')
+    assert main(["add", "--text", "A configured entry."]) == 0
+    out = capsys.readouterr().out
+    assert "[fact] A configured entry." in out
+    entries = Inbox(root).list_entries()
+    assert len(entries) == 1 and entries[0].category == "fact"
+
+
+def test_config_tilde_root_is_expanded(tmp_path, monkeypatch):
+    from musings_inbox.inbox import main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, 'root = "~/my-inbox"\ndefault_category = "preference"\n')
+    assert main(["add", "--text", "Tilde expands to home."]) == 0
+    assert Inbox(tmp_path / "my-inbox").list_entries()[0].category == "preference"
+
+
+def test_config_cli_flags_win_over_config(tmp_path, monkeypatch):
+    from musings_inbox.inbox import main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, f'root = "{tmp_path / "config-inbox"}"\ndefault_category = "fact"\n')
+    other = str(tmp_path / "cli-inbox")
+    assert main(["--root", other, "add", "--type", "preference",
+                 "--text", "CLI beats config."]) == 0
+    assert len(Inbox(tmp_path / "cli-inbox").list_entries()) == 1
+    assert not (tmp_path / "config-inbox").exists()
+
+
+def test_config_xdg_config_home_is_honored(tmp_path, monkeypatch):
+    from musings_inbox.inbox import main
+
+    monkeypatch.setenv("HOME", str(tmp_path / "elsewhere"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, f'root = "{tmp_path / "xdg-inbox"}"\ndefault_category = "material"\n',
+                  xdg=tmp_path / "xdg")
+    assert main(["add", "--text", "Found through XDG."]) == 0
+    assert Inbox(tmp_path / "xdg-inbox").list_entries()[0].category == "material"
+
+
+def test_config_explicit_path_and_missing_explicit_path(tmp_path, monkeypatch, capsys):
+    from musings_inbox.inbox import main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "elsewhere.toml"
+    cfg.write_text(f'root = "{tmp_path / "explicit-inbox"}"\ndefault_category = "fact"\n',
+                   encoding="utf-8")
+    assert main(["--config", str(cfg), "add", "--text", "Explicit config wins."]) == 0
+    assert len(Inbox(tmp_path / "explicit-inbox").list_entries()) == 1
+    # A --config that does not exist is an error, not a silent default.
+    assert main(["--config", str(tmp_path / "no-such.toml"), "init"]) == 1
+    assert "config file not found" in capsys.readouterr().err
+
+
+def test_config_missing_default_file_is_fine(tmp_path, monkeypatch):
+    from musings_inbox.inbox import load_config, main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert load_config() == {}
+    assert main(["--root", str(tmp_path / "plain"), "init"]) == 0
+    assert (tmp_path / "plain" / "index.md").exists()
+
+
+def test_config_add_without_type_and_without_default_fails(tmp_path, monkeypatch, capsys):
+    from musings_inbox.inbox import main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.chdir(tmp_path)
+    _write_config(tmp_path, f'root = "{tmp_path / "my-inbox"}"\n')
+    assert main(["add", "--text", "No category anywhere."]) == 1
+    assert "add needs --type" in capsys.readouterr().err
+    assert not (tmp_path / "my-inbox").exists()
+
+
+def test_config_rejects_unknown_keys_bad_values_and_bad_toml(tmp_path):
+    from musings_inbox.inbox import load_config
+
+    cases = [
+        ('defualt_category = "fact"\n', "unknown keys"),
+        ('default_category = "diary"\n', "default_category"),
+        ('root = ""\n', "'root' must be a non-empty string"),
+        ('root = 42\n', "'root' must be a non-empty string"),
+        ('root = [\n', "invalid config file"),
+    ]
+    for text, fragment in cases:
+        cfg = tmp_path / "bad.toml"
+        cfg.write_text(text, encoding="utf-8")
+        try:
+            load_config(cfg)
+        except ValueError as exc:
+            assert fragment in str(exc), f"{text!r} raised {exc}, expected {fragment!r}"
+        else:
+            raise AssertionError(f"config {text!r} should have raised ValueError")
+
+
+def test_config_load_returns_only_set_keys(tmp_path):
+    from musings_inbox.inbox import load_config
+
+    cfg = tmp_path / "only-root.toml"
+    cfg.write_text(f'root = "{tmp_path / "somewhere"}"\n', encoding="utf-8")
+    assert load_config(cfg) == {"root": str(tmp_path / "somewhere")}
+
+
+def test_config_fallback_parser_accepts_flat_keys_and_rejects_tables():
+    from musings_inbox.inbox import _parse_config_fallback
+
+    parsed = _parse_config_fallback(
+        '# a comment\nroot = "/tmp/fake-inbox"  # trailing comment\n'
+        "default_category = 'fact'\n"
+    )
+    assert parsed == {"root": "/tmp/fake-inbox", "default_category": "fact"}
+    try:
+        _parse_config_fallback("[inbox]\nroot = \"/tmp/x\"\n")
+    except ValueError as exc:
+        assert "cannot parse" in str(exc)
+    else:
+        raise AssertionError("fallback parser should reject a [table] header")
