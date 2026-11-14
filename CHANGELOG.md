@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-11-15
+
+### Added
+- Regex and case-sensitive search: `search --regex` treats the query as a regular expression matched against the whole line (an invalid pattern fails with the pattern named), and `search --case-sensitive` makes the match exact-case — plain substring matches stop lowercasing both sides and a regex is compiled without `re.IGNORECASE`. Both flags compose with `--tag` / `--category` / `--since`; without them search behaves exactly as before. Library method `Inbox.search()` gains matching `regex` / `case_sensitive` parameters.
+
 ## [0.2.7] - 2026-11-13
 
 ### Added

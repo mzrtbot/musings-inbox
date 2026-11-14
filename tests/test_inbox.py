@@ -518,7 +518,7 @@ def test_search_since_and_category_filters(tmp_path):
     box = Inbox(tmp_path / "inbox")
     box.add("fact", "The workshop opens at nine.", now=datetime(2026, 10, 22, 9, 0))
     box.add("fact", "The workshop kettle whistles. #routine", now=datetime(2026, 10, 23, 9, 0))
-    box.add("preference", "The workshop cat naps by the stove.", now=datetime(2026, 10, 23, 8, 0))
+    box.add("preference", "The Workshop cat naps by the stove.", now=datetime(2026, 10, 23, 8, 0))
     box.add("experience", "The workshop roof leaked in the rain.", now=datetime(2026, 10, 24, 9, 0))
     assert len(box.search("workshop")) == 4
     # --since is inclusive: the boundary day itself is kept.
@@ -575,6 +575,84 @@ def test_search_cli_since_and_category_filters(tmp_path, capsys):
     assert capsys.readouterr().out.strip() == "no matches"
     assert main(["--root", root, "search", "workshop", "--since", "bad-date"]) == 1
     assert "invalid date" in capsys.readouterr().err
+
+
+def test_search_regex(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "The Workshop opens at nine.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("fact", "The workshop kettle whistles twice. #routine", now=datetime(2026, 10, 23, 9, 0))
+    box.add("preference", "The Workshop cat naps by the stove.", now=datetime(2026, 10, 23, 8, 0))
+    box.add("experience", "The workshop roof leaked in the rain.", now=datetime(2026, 10, 24, 9, 0))
+    # alternation and word matching across entries
+    hits = box.search(r"opens|whistles", regex=True)
+    assert len(hits) == 2
+    assert any("opens at nine" in ln for ln in hits)
+    assert any("kettle whistles" in ln for ln in hits)
+    # a regex is matched against the whole line, so anchors work too
+    assert len(box.search(r"— The workshop.*rain\.$", regex=True)) == 1
+    assert box.search(r"^The workshop", regex=True) == []
+    # regex is case-insensitive by default, like plain search
+    assert len(box.search(r"WORKSHOP", regex=True)) == 4
+    assert len(box.search(r"WORKSHOP", regex=True, case_sensitive=True)) == 0
+    assert len(box.search(r"Workshop (opens|cat)", regex=True, case_sensitive=True)) == 2
+    # a plain query containing regex syntax stays literal unless --regex
+    assert box.search(r"opens|whistles") == []
+    # regex composes with the other filters
+    assert len(box.search(r"workshop", regex=True, category="fact")) == 2
+    assert len(box.search(r"workshop", regex=True, since="2026-10-23")) == 3
+    assert len(box.search(r"workshop", regex=True, tag="routine")) == 1
+    assert len(box.search(r"workshop", regex=True, category="fact", since="2026-10-24")) == 0
+
+
+def test_search_case_sensitive(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "The Workshop opens at nine.", now=NOW)
+    box.add("fact", "the workshop kettle whistles.", now=NOW)
+    # default: case-insensitive, both entries match either casing
+    assert len(box.search("workshop")) == 2
+    assert len(box.search("WORKSHOP")) == 2
+    # case-sensitive: only the entry with the exact casing matches
+    assert len(box.search("Workshop", case_sensitive=True)) == 1
+    assert any("opens at nine" in ln for ln in box.search("Workshop", case_sensitive=True))
+    assert len(box.search("workshop", case_sensitive=True)) == 1
+    assert any("kettle whistles" in ln for ln in box.search("workshop", case_sensitive=True))
+    assert box.search("WORKSHOP", case_sensitive=True) == []
+    # case-sensitivity composes with the other filters
+    assert len(box.search("Workshop", case_sensitive=True, category="fact")) == 1
+    assert len(box.search("Workshop", case_sensitive=True, since="2026-10-24")) == 0
+
+
+def test_search_regex_rejects_invalid_pattern(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "Something searchable.", now=NOW)
+    for pattern in ["(", "[a-", "a{2,1}", "(?P<", "\\"]:
+        try:
+            box.search(pattern, regex=True)
+        except ValueError as exc:
+            assert "invalid regular expression" in str(exc)
+            assert pattern in str(exc)
+            continue
+        raise AssertionError(f"should reject invalid regex {pattern!r}")
+
+
+def test_search_cli_regex_and_case_sensitive(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "The Workshop opens at nine.", now=NOW)
+    box.add("fact", "the workshop kettle whistles.", now=NOW)
+    assert main(["--root", root, "search", r"opens|whistles", "--regex"]) == 0
+    out = capsys.readouterr().out
+    assert "opens at nine" in out and "kettle whistles" in out
+    assert main(["--root", root, "search", "Workshop", "--case-sensitive"]) == 0
+    out = capsys.readouterr().out
+    assert "opens at nine" in out and "kettle whistles" not in out
+    assert main(["--root", root, "search", r"WORKSHOP", "--regex", "--case-sensitive"]) == 0
+    assert capsys.readouterr().out.strip() == "no matches"
+    assert main(["--root", root, "search", "(", "--regex"]) == 1
+    err = capsys.readouterr().err
+    assert "invalid regular expression" in err
 
 
 def test_list_cli_tag_filter(tmp_path, capsys):

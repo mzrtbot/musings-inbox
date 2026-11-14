@@ -741,6 +741,8 @@ class Inbox:
         tag: str | None = None,
         category: str | None = None,
         since: str | None = None,
+        regex: bool = False,
+        case_sensitive: bool = False,
     ) -> list[str]:
         """Search entry lines for ``query`` (case-insensitive).
 
@@ -752,6 +754,13 @@ class Inbox:
         Whenever any filter is given, hits must be entry lines (only
         they carry a category, a date, and tags); hand-written headers
         and notes never match a filtered search.
+
+        ``regex`` treats ``query`` as a regular expression matched
+        against the whole line (an invalid pattern raises
+        ``ValueError``). ``case_sensitive`` makes the match exact-case:
+        plain substring matches stop lowercasing both sides, and a
+        regex is compiled without ``re.IGNORECASE``. Both default off,
+        so an unflagged search behaves exactly as before.
         """
         if category is not None and category not in CATEGORIES:
             raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
@@ -759,13 +768,31 @@ class Inbox:
             _validate_date(since)
         wanted = _normalize_tag(tag) if tag is not None else None
         filtered = tag is not None or category is not None or since is not None
+        if regex:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            try:
+                pattern = re.compile(query, flags)
+            except re.error as exc:
+                raise ValueError(f"invalid regular expression: {query!r}: {exc}") from None
+
+            def matches(ln: str) -> bool:
+                return pattern.search(ln) is not None
+        elif case_sensitive:
+
+            def matches(ln: str) -> bool:
+                return query in ln
+        else:
+            lowered = query.lower()
+
+            def matches(ln: str) -> bool:
+                return lowered in ln.lower()
         files = [CATEGORIES[category]] if category is not None else list(CATEGORIES.values())
         hits: list[str] = []
         for filename in files:
             p = self._file(filename)
             if p.exists():
                 for ln in p.read_text(encoding="utf-8").splitlines():
-                    if query.lower() not in ln.lower():
+                    if not matches(ln):
                         continue
                     if filtered:
                         match = _ENTRY_LINE.match(ln)
@@ -1136,6 +1163,10 @@ def main(argv: list[str] | None = None) -> int:
                           help="only search this category")
     p_search.add_argument("--since", dest="since", default=None,
                           help="only entries on or after this date, YYYY-MM-DD")
+    p_search.add_argument("--regex", dest="regex", action="store_true",
+                          help="treat the query as a regular expression (matched against the whole line)")
+    p_search.add_argument("--case-sensitive", dest="case_sensitive", action="store_true",
+                          help="match case exactly (default: case-insensitive)")
     p_list = sub.add_parser("list", help="list entries, optionally filtered by category and/or date")
     p_list.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
     p_list.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")
@@ -1193,7 +1224,9 @@ def main(argv: list[str] | None = None) -> int:
             entry = inbox.add(category, args.text)
             print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
         elif args.cmd == "search":
-            hits = inbox.search(args.query, tag=args.tag, category=args.category, since=args.since)
+            hits = inbox.search(args.query, tag=args.tag, category=args.category,
+                                since=args.since, regex=args.regex,
+                                case_sensitive=args.case_sensitive)
             print("\n".join(hits) if hits else "no matches")
         elif args.cmd == "list":
             entries = inbox.list_entries(category=args.category, on_date=args.on_date, tag=args.tag)

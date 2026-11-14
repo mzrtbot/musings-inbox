@@ -16,9 +16,9 @@
 - `stats` date ranges (`--since` / `--until`) and per-month counts.
 - `export --format html`: a single offline-readable HTML page (table of contents, category anchors, escaped entry text).
 - Config file support (`~/.config/musings-inbox/config.toml`: default `--root`, default category).
+- `search --regex` and `--case-sensitive`.
 
 ## Next (0.3.x)
-- `search --regex` and `--case-sensitive`.
 - `add` with multi-line input (stdin / editor) and batch append.
 - `archive`: move old entries by date into `archive/` and update the index.
 - Release v0.3.0.

@@ -80,6 +80,11 @@ header) is not a tag. Queries can filter by tag, accepting a leading `#`.
   files, cite entry IDs, and quote the recorded timestamp as-is.
 - Narrow a search with `--tag`, `--category`, or `--since YYYY-MM-DD`
   (entries on or after that day); a filtered search matches entry lines only.
+- `search --regex` treats the query as a regular expression matched against
+  the whole line (an invalid pattern is an error naming the pattern);
+  `--case-sensitive` makes the match exact-case. Both compose with the
+  other filters; without them search stays case-insensitive substring
+  matching.
 - If nothing is recorded, say so plainly. Never fill gaps by invention.
 - Hand-written non-entry lines (headers, notes) are never treated as entries.
 
