@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-11-16
+
+### Added
+- Multi-line input and batch append for `add`: `--text` is now repeatable (each `--text` files one entry), and exactly one input source is required — `--text`, `--stdin`, `--editor`, or `--file` (the four are mutually exclusive; `add` with none, or with more than one, is an error). `--stdin` and `--file` read entries as paragraphs separated by blank lines (`#` lines are comments and are ignored); `--editor` opens `$VISUAL` / `$EDITOR` (default `vi`, arguments allowed, e.g. `code --wait`) on a temporary file with the same paragraph format and files what is saved. A paragraph's wrapped lines are folded to single spaces, because entry lines in the inbox are single lines — `add` now also folds any run of whitespace (newlines, tabs, repeated spaces) in `--text` to single spaces instead of breaking the entry format. An empty batch (empty input, or all comments) prints `no entries to add` and writes nothing — not even `init`. A missing editor or a non-zero editor exit fails with the editor named and files nothing. Library functions `parse_batch_text()` / `launch_editor()` and method `Inbox.add_many()` back the new sources; the CLI prints each filed entry plus `added: N`.
+
 ## [0.2.8] - 2026-11-15
 
 ### Added

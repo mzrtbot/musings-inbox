@@ -12,8 +12,11 @@ import html
 import json
 import os
 import re
+import shlex
 import stat
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -68,6 +71,80 @@ def parse_tags(text: str) -> list[str]:
 def _normalize_tag(tag: str) -> str:
     """Accept 'trip' or '#trip'; normalize to the lowercase bare tag name."""
     return tag.lstrip("#").strip().lower()
+
+
+def parse_batch_text(raw: str) -> list[str]:
+    """Split batch input into entry texts.
+
+    Entries are paragraphs separated by one or more blank lines. Lines
+    starting with ``#`` are comments and are ignored, so an editor
+    template can carry instructions. Within a paragraph, line breaks are
+    folded to single spaces: entry lines in the inbox are single lines,
+    so a wrapped paragraph becomes one entry. Empty paragraphs are
+    dropped, so an empty (or all-comment) input yields no entries.
+    """
+    entries: list[str] = []
+    paragraph: list[str] = []
+    for ln in raw.splitlines():
+        stripped = ln.strip()
+        if not stripped:
+            if paragraph:
+                entries.append(" ".join(paragraph))
+                paragraph = []
+            continue
+        if stripped.startswith("#"):
+            continue
+        paragraph.append(stripped)
+    if paragraph:
+        entries.append(" ".join(paragraph))
+    return entries
+
+
+def launch_editor(path: Path) -> None:
+    """Open ``path`` in the user's editor and wait for it to close.
+
+    The editor is ``$VISUAL``, then ``$EDITOR``, then ``vi``; a value
+    with arguments (``"code --wait"``) is split on whitespace. A missing
+    editor or a non-zero exit raises ``ValueError`` and nothing is filed.
+    """
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+    argv = shlex.split(editor)
+    if not argv:
+        raise ValueError("no editor configured (set $VISUAL or $EDITOR)")
+    try:
+        result = subprocess.run([*argv, str(path)])
+    except FileNotFoundError:
+        raise ValueError(f"editor not found: {argv[0]!r} (set $VISUAL or $EDITOR)") from None
+    if result.returncode != 0:
+        raise ValueError(
+            f"editor {argv[0]!r} exited with status {result.returncode}; nothing was filed"
+        )
+
+
+def _edit_batch() -> str:
+    """Let the user compose batch entries in their editor; return the text.
+
+    The editor opens on a temporary file carrying short instructions as
+    ``#`` comments (ignored by :func:`parse_batch_text`). The file is
+    always deleted afterwards, whether the edit succeeded or not.
+    """
+    template = (
+        "# Write one entry per paragraph, separated by blank lines.\n"
+        "# Lines starting with # are ignored.\n"
+        "# Save and close the editor to file the entries; leave this file\n"
+        "# empty (or all comments) to file nothing.\n"
+    )
+    fd, tmp = tempfile.mkstemp(suffix=".md", prefix="musings-inbox-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(template)
+        launch_editor(Path(tmp))
+        return Path(tmp).read_text(encoding="utf-8")
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
 
 
 def _validate_date(value: str) -> None:
@@ -453,7 +530,11 @@ class Inbox:
     def add(self, category: str, text: str, now: datetime | None = None) -> Entry:
         if category not in CATEGORIES:
             raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
-        text = text.strip()
+        # Entry lines are single lines, so fold every run of whitespace
+        # (newlines, tabs, repeated spaces) to one space — a multi-line
+        # --text or a pasted paragraph files as one entry instead of
+        # breaking the line format (and failing read-back).
+        text = " ".join(text.split())
         if not text:
             raise ValueError("entry text must not be empty")
         self.init()
@@ -475,6 +556,18 @@ class Inbox:
         with index.open("a", encoding="utf-8") as fh:
             fh.write(f"| {entry_id} | {timestamp} | {category} | {summary} |\n")
         return Entry(entry_id, category, text, timestamp)
+
+    def add_many(self, category: str, texts: list[str], now: datetime | None = None) -> list[Entry]:
+        """Append several entries to one category, in order.
+
+        Each text goes through :meth:`add` (same validation, sequential
+        IDs, trailing-newline and read-back checks). An empty list writes
+        nothing — not even ``init`` — so an empty batch leaves the disk
+        untouched.
+        """
+        if category not in CATEGORIES:
+            raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
+        return [self.add(category, text, now=now) for text in texts]
 
     def list_entries(
         self,
@@ -1154,7 +1247,18 @@ def main(argv: list[str] | None = None) -> int:
     p_add = sub.add_parser("add")
     p_add.add_argument("--type", dest="category", default=None, choices=sorted(CATEGORIES),
                        help="entry category (default: default_category from the config file)")
-    p_add.add_argument("--text", required=True)
+    p_add_sources = p_add.add_mutually_exclusive_group(required=True)
+    p_add_sources.add_argument("--text", dest="texts", action="append", default=None,
+                               help="entry text (repeatable: each --text files one entry)")
+    p_add_sources.add_argument("--stdin", dest="stdin", action="store_true",
+                               help="read entries from stdin: one entry per paragraph, "
+                                    "blank lines separate entries, # lines are comments")
+    p_add_sources.add_argument("--editor", dest="editor", action="store_true",
+                               help="compose entries in $VISUAL/$EDITOR (default vi): "
+                                    "one entry per paragraph, blank lines separate entries")
+    p_add_sources.add_argument("--file", dest="file", default=None,
+                               help="read entries from a file: one entry per paragraph, "
+                                    "blank lines separate entries, # lines are comments")
     p_search = sub.add_parser("search")
     p_search.add_argument("query")
     p_search.add_argument("--tag", dest="tag", default=None,
@@ -1221,8 +1325,20 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(
                     "add needs --type (or set default_category in the config file)"
                 )
-            entry = inbox.add(category, args.text)
-            print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
+            if args.texts is not None:
+                texts = args.texts
+            elif args.stdin:
+                texts = parse_batch_text(sys.stdin.read())
+            elif args.editor:
+                texts = parse_batch_text(_edit_batch())
+            else:
+                texts = parse_batch_text(Path(args.file).read_text(encoding="utf-8"))
+            if not texts:
+                print("no entries to add")
+            else:
+                for entry in inbox.add_many(category, texts):
+                    print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
+                print(f"added: {len(texts)}")
         elif args.cmd == "search":
             hits = inbox.search(args.query, tag=args.tag, category=args.category,
                                 since=args.since, regex=args.regex,

@@ -131,6 +131,10 @@ the inbox with it, and `--dry-run` validates without writing anything.
 `stats` accepts `--since` / `--until` (YYYY-MM-DD, boundary days included)
 to summarize a date range, and always reports per-month counts
 (`YYYY-MM: N`) alongside the per-category counts.
+`add` takes exactly one input source — repeatable `--text`, `--stdin`,
+`--editor` (`$VISUAL` / `$EDITOR`, default `vi`), or `--file` — and the
+batch sources read one entry per blank-line-separated paragraph (`#` lines
+are comments, wrapped lines fold to spaces); an empty batch writes nothing.
 `templates/` (English) and `templates/zh/` (Chinese) hold drop-in starter
 files. Agents may call the CLI or follow this protocol directly with their own
 file tools.

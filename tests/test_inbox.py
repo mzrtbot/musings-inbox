@@ -1578,3 +1578,233 @@ def test_config_fallback_parser_accepts_flat_keys_and_rejects_tables():
         assert "cannot parse" in str(exc)
     else:
         raise AssertionError("fallback parser should reject a [table] header")
+
+
+def test_parse_batch_text_splits_paragraphs_and_ignores_comments():
+    from musings_inbox.inbox import parse_batch_text
+
+    raw = (
+        "# editor instructions are ignored\n"
+        "The workshop opens at nine. #routine\n"
+        "\n"
+        "\n"
+        "Quiet mornings before the market wakes.\n"
+        "  # a comment between paragraphs\n"
+        "Fixed the glued index line.\n"
+    )
+    assert parse_batch_text(raw) == [
+        "The workshop opens at nine. #routine",
+        # A comment line inside a paragraph is skipped but does not split it.
+        "Quiet mornings before the market wakes. Fixed the glued index line.",
+    ]
+    assert parse_batch_text("") == []
+    assert parse_batch_text("# only comments\n\n# nothing else\n") == []
+
+
+def test_parse_batch_text_joins_wrapped_lines():
+    from musings_inbox.inbox import parse_batch_text
+
+    raw = "A long thought that wraps\nacross two lines in the editor\nand keeps going.\n"
+    assert parse_batch_text(raw) == [
+        "A long thought that wraps across two lines in the editor and keeps going."
+    ]
+
+
+def test_add_many_assigns_sequential_ids(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    added = box.add_many("fact", [
+        "The workshop opens at nine.",
+        "The market bell rings at noon.",
+    ], now=NOW)
+    assert [e.entry_id for e in added] == ["20261023-01", "20261023-02"]
+    assert [e.text for e in added] == [
+        "The workshop opens at nine.",
+        "The market bell rings at noon.",
+    ]
+    assert len(box.list_entries()) == 2
+    assert box.verify()
+
+
+def test_add_many_empty_writes_nothing(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    assert box.add_many("fact", []) == []
+    assert not (tmp_path / "inbox").exists()
+
+
+def test_add_collapses_newlines_and_repeated_whitespace(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    entry = box.add("fact", "First line\nsecond line\twith   spaces.", now=NOW)
+    assert entry.text == "First line second line with spaces."
+    lines = (box.root / "facts.md").read_text(encoding="utf-8").splitlines()
+    assert lines[-1].endswith("First line second line with spaces.")
+    assert box.verify()
+
+
+def test_add_text_is_repeatable_cli(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "add", "--type", "fact",
+                 "--text", "The workshop opens at nine.",
+                 "--text", "The market bell rings at noon."]) == 0
+    out = capsys.readouterr().out
+    assert "The workshop opens at nine." in out and "The market bell rings at noon." in out
+    assert "added: 2" in out
+    assert len(Inbox(tmp_path / "inbox").list_entries()) == 2
+
+
+def test_add_stdin_cli(tmp_path, monkeypatch, capsys):
+    import io
+
+    from musings_inbox.inbox import main
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(
+        "The workshop opens at nine. #routine\n"
+        "\n"
+        "Quiet mornings before the market wakes.\n"
+        "The kettle is already on.\n"
+    ))
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "add", "--type", "fact", "--stdin"]) == 0
+    out = capsys.readouterr().out
+    assert "added: 2" in out
+    entries = Inbox(tmp_path / "inbox").list_entries()
+    assert [e.text for e in entries] == [
+        "The workshop opens at nine. #routine",
+        "Quiet mornings before the market wakes. The kettle is already on.",
+    ]
+
+
+def test_add_stdin_empty_writes_nothing(tmp_path, monkeypatch, capsys):
+    import io
+
+    from musings_inbox.inbox import main
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("# nothing but a comment\n"))
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "add", "--type", "fact", "--stdin"]) == 0
+    assert "no entries to add" in capsys.readouterr().out
+    assert not (tmp_path / "inbox").exists()
+
+
+def test_add_file_cli(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    batch = tmp_path / "batch.md"
+    batch.write_text(
+        "# a morning's notes\n"
+        "The workshop opens at nine.\n"
+        "\n"
+        "The market bell rings at noon.\n"
+        "Bread is still warm then.\n"
+        "\n"
+        "Quiet evenings after the rain.\n",
+        encoding="utf-8",
+    )
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "add", "--type", "experience", "--file", str(batch)]) == 0
+    out = capsys.readouterr().out
+    assert "added: 3" in out
+    entries = Inbox(tmp_path / "inbox").list_entries()
+    assert [e.category for e in entries] == ["experience"] * 3
+    assert entries[1].text == "The market bell rings at noon. Bread is still warm then."
+
+
+def test_add_file_missing_is_an_error(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "add", "--type", "fact",
+                 "--file", str(tmp_path / "no-such-file.md")]) == 1
+    assert "error:" in capsys.readouterr().err
+    assert not (tmp_path / "inbox").exists()
+
+
+def _fake_editor(tmp_path, body: str) -> Path:
+    """A fake $EDITOR: appends ``body`` to the file it is given."""
+    script = tmp_path / "fake-editor.py"
+    script.write_text(
+        "import sys\n"
+        "with open(sys.argv[1], 'a', encoding='utf-8') as fh:\n"
+        f"    fh.write({body!r})\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_add_editor_cli(tmp_path, monkeypatch, capsys):
+    from musings_inbox.inbox import main
+
+    script = _fake_editor(tmp_path, "\nThe workshop opens at nine.\n\nQuiet mornings.\n")
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", f"{sys.executable} {script}")
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "add", "--type", "fact", "--editor"]) == 0
+    out = capsys.readouterr().out
+    assert "added: 2" in out
+    entries = Inbox(tmp_path / "inbox").list_entries()
+    assert [e.text for e in entries] == [
+        "The workshop opens at nine.",
+        "Quiet mornings.",
+    ]
+
+
+def test_add_editor_empty_files_nothing(tmp_path, monkeypatch, capsys):
+    from musings_inbox.inbox import main
+
+    script = _fake_editor(tmp_path, "")
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", f"{sys.executable} {script}")
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "add", "--type", "fact", "--editor"]) == 0
+    assert "no entries to add" in capsys.readouterr().out
+    assert not (tmp_path / "inbox").exists()
+
+
+def test_add_editor_failure_files_nothing(tmp_path, monkeypatch, capsys):
+    from musings_inbox.inbox import main
+
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", "false")
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "add", "--type", "fact", "--editor"]) == 1
+    assert "error:" in capsys.readouterr().err
+    assert not (tmp_path / "inbox").exists()
+
+
+def test_add_editor_missing_is_an_error(tmp_path, monkeypatch, capsys):
+    from musings_inbox.inbox import main
+
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", "no-such-editor-xyz")
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "add", "--type", "fact", "--editor"]) == 1
+    assert "editor not found" in capsys.readouterr().err
+    assert not (tmp_path / "inbox").exists()
+
+
+def test_add_sources_are_mutually_exclusive(tmp_path, monkeypatch):
+    import io
+
+    import pytest
+
+    from musings_inbox.inbox import main
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("Some text.\n"))
+    root = str(tmp_path / "inbox")
+    with pytest.raises(SystemExit) as exc:
+        main(["--root", root, "add", "--type", "fact",
+              "--text", "One entry.", "--stdin"])
+    assert exc.value.code == 2
+
+
+def test_add_requires_exactly_one_source(tmp_path):
+    import pytest
+
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    with pytest.raises(SystemExit) as exc:
+        main(["--root", root, "add", "--type", "fact"])
+    assert exc.value.code == 2
+    assert not (tmp_path / "inbox").exists()
