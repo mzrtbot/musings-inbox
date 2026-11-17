@@ -246,6 +246,16 @@ class RestoreResult:
     dry_run: bool = False
 
 
+@dataclass
+class ArchiveResult:
+    archived: list[Entry]
+    files: dict[str, Path]
+    dry_run: bool = False
+
+
+ARCHIVE_DIR = "archive"
+
+
 BACKUP_MANIFEST = "manifest.json"
 BACKUP_FORMAT = "musings-inbox-backup"
 BACKUP_FORMAT_VERSION = 1
@@ -828,6 +838,102 @@ class Inbox:
                 imported.append(self.add(cat, text, now=when))
         return ImportResult(imported=imported, duplicates=duplicates, dry_run=dry_run)
 
+    def _archive_file(self, category: str, month: str) -> Path:
+        """Path of the archive file for one category in one month.
+
+        Files live under ``archive/`` inside the inbox root and are
+        named ``<category>-YYYY-MM.md`` (e.g. ``facts-2026-10.md``),
+        so an archived file stays in the same entry-line format as a
+        category file and can be read back with the same tooling (or
+        re-imported with ``import --category``). Both parts of the name
+        come from validated data (a known category, a ``YYYY-MM`` slice
+        of a parsed timestamp), so the name can never be a traversal.
+        """
+        name = f"{category}-{month}.md"
+        p = self.root / ARCHIVE_DIR / name
+        if p.is_symlink():
+            raise IOError(f"refusing to follow symlink: {p}")
+        resolved = p.resolve()
+        try:
+            resolved.relative_to(self._root_abs)
+        except ValueError:
+            raise IOError(f"archive file escapes the inbox root: {p}") from None
+        return p
+
+    def archive(self, before: str, dry_run: bool = False) -> ArchiveResult:
+        """Move entries dated before ``before`` into ``archive/``.
+
+        ``before`` is ``YYYY-MM-DD``; entries dated on or after that
+        day stay — the boundary day is kept, the same convention as
+        ``--since``. Archived entries are grouped by category and month
+        into ``archive/<category>-YYYY-MM.md`` files (same entry-line
+        format as the category files, with a header line when the file
+        is first created), removed from their category files, and
+        dropped from the index. Hand-written lines in the category
+        files and the index header are kept. A second archive into the
+        same month appends to the existing file. With ``dry_run``
+        nothing is written and the returned entries carry the files
+        they would have gone to. Archiving nothing writes nothing —
+        not even the ``archive/`` directory. After writing, the inbox
+        is verified by read-back: the index must agree with the
+        remaining content and every archived line must be present in
+        its archive file.
+        """
+        _validate_date(before)
+        to_archive = [e for e in self.list_entries() if e.timestamp[:10] < before]
+        if not to_archive:
+            return ArchiveResult(archived=[], files={}, dry_run=dry_run)
+        grouped: dict[tuple[str, str], list[Entry]] = {}
+        for entry in to_archive:
+            grouped.setdefault((entry.category, entry.timestamp[:7]), []).append(entry)
+        files = {
+            f"{cat}-{month}.md": self._archive_file(cat, month)
+            for (cat, month) in grouped
+        }
+        if dry_run:
+            return ArchiveResult(archived=to_archive, files=files, dry_run=True)
+        archived_ids = {e.entry_id for e in to_archive}
+        (self.root / ARCHIVE_DIR).mkdir(parents=True, exist_ok=True)
+        for (cat, month), entries in sorted(grouped.items()):
+            p = files[f"{cat}-{month}.md"]
+            if not p.exists():
+                title = CATEGORIES[cat].removesuffix(".md").title()
+                p.write_text(f"# Archived {title} — {month}\n", encoding="utf-8")
+            _ensure_trailing_newline(p)
+            with p.open("a", encoding="utf-8") as fh:
+                for entry in entries:
+                    fh.write(f"- [{entry.entry_id}] {entry.timestamp} — {entry.text}\n")
+        for cat in {e.category for e in to_archive}:
+            p = self._file(CATEGORIES[cat])
+            kept = []
+            for ln in p.read_text(encoding="utf-8").splitlines():
+                match = _ENTRY_LINE.match(ln)
+                if match is None or match.group(1) not in archived_ids:
+                    kept.append(ln)
+            p.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        index = self._file(INDEX_NAME)
+        kept_rows = []
+        for ln in index.read_text(encoding="utf-8").splitlines():
+            match = _INDEX_ROW.match(ln)
+            if match is None or match.group(1) not in archived_ids:
+                kept_rows.append(ln)
+        index.write_text("\n".join(kept_rows) + "\n", encoding="utf-8")
+        # Read-back verification: the inbox must verify cleanly, and
+        # every archived entry must be present in its archive file.
+        self.verify()
+        for (cat, month), entries in grouped.items():
+            text = files[f"{cat}-{month}.md"].read_text(encoding="utf-8")
+            missing = [
+                e.entry_id for e in entries
+                if f"- [{e.entry_id}] {e.timestamp} — {e.text}" not in text
+            ]
+            if missing:
+                raise IOError(
+                    f"read-back failed: entries {missing} missing from "
+                    f"archive file {files[f'{cat}-{month}.md']}"
+                )
+        return ArchiveResult(archived=to_archive, files=files, dry_run=False)
+
     def search(
         self,
         query: str,
@@ -1307,6 +1413,12 @@ def main(argv: list[str] | None = None) -> int:
                            help="backup directory created by `backup`")
     p_restore.add_argument("--dry-run", dest="dry_run", action="store_true",
                            help="validate the backup without writing anything")
+    p_archive = sub.add_parser("archive", help="move entries dated before a date into archive/ and update the index")
+    p_archive.add_argument("--before", dest="before", required=True,
+                           help="archive entries dated before this date, YYYY-MM-DD "
+                                "(the day itself is kept)")
+    p_archive.add_argument("--dry-run", dest="dry_run", action="store_true",
+                           help="show what would be archived without writing anything")
     sub.add_parser("verify")
     args = ap.parse_args(argv)
     try:
@@ -1436,6 +1548,17 @@ def main(argv: list[str] | None = None) -> int:
             for entry in result.restored:
                 print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
             print(f"restored: {len(result.restored)}")
+        elif args.cmd == "archive":
+            result = inbox.archive(args.before, dry_run=args.dry_run)
+            if result.dry_run:
+                print("dry run: no changes written")
+            if not result.archived:
+                print("nothing to archive")
+            for entry in result.archived:
+                print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
+            for name in sorted(result.files):
+                print(f"archive file: {result.files[name]}")
+            print(f"archived: {len(result.archived)}")
         elif args.cmd == "verify":
             for name, digest in inbox.verify().items():
                 print(f"{name} {digest}")

@@ -1808,3 +1808,161 @@ def test_add_requires_exactly_one_source(tmp_path):
         main(["--root", root, "add", "--type", "fact"])
     assert exc.value.code == 2
     assert not (tmp_path / "inbox").exists()
+
+
+def test_archive_moves_old_entries_and_updates_index(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    result = box.archive("2026-10-23")
+    assert [e.entry_id for e in result.archived] == ["20261022-01"]
+    assert result.files == {"fact-2026-10.md": box.root / "archive" / "fact-2026-10.md"}
+    assert not result.dry_run
+    # The archived entry is gone from the live files and the index.
+    assert "20261022-01" not in (box.root / "facts.md").read_text(encoding="utf-8")
+    assert "20261022-01" not in (box.root / "index.md").read_text(encoding="utf-8")
+    assert [e.entry_id for e in box.list_entries()] == ["20261023-01", "20261023-02"]
+    # ... and present in the archive file, in the same line format.
+    archived = (box.root / "archive" / "fact-2026-10.md").read_text(encoding="utf-8")
+    assert archived.splitlines()[0] == "# Archived Facts — 2026-10"
+    assert "- [20261022-01] 2026-10-22 09:00 — The workshop opens at nine. #routine" in archived
+    assert box.verify()  # index and remaining content still agree
+
+
+def test_archive_keeps_boundary_day(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    result = box.archive("2026-10-22")
+    assert result.archived == []
+    assert not (box.root / "archive").exists()
+    assert len(box.list_entries()) == 3
+
+
+def test_archive_groups_by_month_and_category(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "October note one.", now=datetime(2026, 10, 20, 9, 0))
+    box.add("fact", "October note two.", now=datetime(2026, 10, 21, 9, 0))
+    box.add("fact", "November note.", now=datetime(2026, 11, 2, 9, 0))
+    box.add("preference", "November preference.", now=datetime(2026, 11, 3, 9, 0))
+    box.add("fact", "December note stays.", now=datetime(2026, 12, 1, 9, 0))
+    result = box.archive("2026-12-01")
+    assert len(result.archived) == 4
+    assert sorted(result.files) == [
+        "fact-2026-10.md",
+        "fact-2026-11.md",
+        "preference-2026-11.md",
+    ]
+    assert len((box.root / "archive" / "fact-2026-10.md").read_text(encoding="utf-8").splitlines()) == 3
+    assert "November note." in (box.root / "archive" / "fact-2026-11.md").read_text(encoding="utf-8")
+    assert [e.text for e in box.list_entries()] == ["December note stays."]
+
+
+def test_archive_appends_to_existing_archive_file(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    box.archive("2026-10-23")
+    box.add("fact", "A later October note.", now=datetime(2026, 10, 15, 10, 0))
+    result = box.archive("2026-10-23")
+    assert len(result.archived) == 1
+    lines = (box.root / "archive" / "fact-2026-10.md").read_text(encoding="utf-8").splitlines()
+    assert lines.count("# Archived Facts — 2026-10") == 1  # header written once
+    assert len(lines) == 3  # header + two archived entries
+    assert box.verify()
+
+
+def test_archive_dry_run_writes_nothing(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    before = {name: p.read_bytes() for name, p in
+              ((n, box.root / n) for n in ("facts.md", "preferences.md", "experience.md", "index.md"))}
+    result = box.archive("2026-10-23", dry_run=True)
+    assert result.dry_run
+    assert [e.entry_id for e in result.archived] == ["20261022-01"]
+    assert result.files == {"fact-2026-10.md": box.root / "archive" / "fact-2026-10.md"}
+    assert not (box.root / "archive").exists()
+    for name, data in before.items():
+        assert (box.root / name).read_bytes() == data
+
+
+def test_archive_nothing_to_archive_writes_nothing(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    result = box.archive("2026-10-22")
+    assert result.archived == [] and result.files == {}
+    assert not (box.root / "archive").exists()
+
+
+def test_archive_rejects_invalid_date(tmp_path):
+    import pytest
+
+    box = _seeded_inbox(tmp_path, name="inbox")
+    with pytest.raises(ValueError):
+        box.archive("2026-13-01")
+    with pytest.raises(ValueError):
+        box.archive("yesterday")
+
+
+def test_archive_preserves_notes_and_index_header(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    facts = box.root / "facts.md"
+    facts.write_text(
+        facts.read_text(encoding="utf-8") + "A hand-written note, not an entry.\n",
+        encoding="utf-8",
+    )
+    box.archive("2026-10-23")
+    text = facts.read_text(encoding="utf-8")
+    assert text.splitlines() == ["# Facts", "A hand-written note, not an entry."]
+    index = (box.root / "index.md").read_text(encoding="utf-8")
+    assert index.startswith("# Index\n\n| ID | Time | Category | Summary |\n|---|---|---|---|\n")
+    assert box.verify()
+
+
+def test_archive_on_uninitialized_inbox_writes_nothing(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    result = box.archive("2026-10-23")
+    assert result.archived == []
+    assert not (tmp_path / "inbox").exists()
+
+
+def test_archive_cli(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    _seeded_inbox(tmp_path, name="inbox")
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "archive", "--before", "2026-10-23"]) == 0
+    out = capsys.readouterr().out
+    assert "20261022-01 2026-10-22 09:00 [fact] The workshop opens at nine. #routine" in out
+    assert "archive file: " in out and "fact-2026-10.md" in out
+    assert "archived: 1" in out
+    assert Inbox(tmp_path / "inbox").verify()
+    assert len(Inbox(tmp_path / "inbox").list_entries()) == 2
+
+
+def test_archive_cli_dry_run(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    _seeded_inbox(tmp_path, name="inbox")
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "archive", "--before", "2026-10-23", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "dry run: no changes written" in out
+    assert "archived: 1" in out
+    assert not (tmp_path / "inbox" / "archive").exists()
+    assert len(Inbox(tmp_path / "inbox").list_entries()) == 3
+
+
+def test_archive_cli_requires_before(tmp_path):
+    import pytest
+
+    from musings_inbox.inbox import main
+
+    _seeded_inbox(tmp_path, name="inbox")
+    with pytest.raises(SystemExit) as exc:
+        main(["--root", str(tmp_path / "inbox"), "archive"])
+    assert exc.value.code == 2
+    assert not (tmp_path / "inbox" / "archive").exists()
+
+
+def test_archived_file_can_be_reimported(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    box.archive("2026-10-23")
+    result = box.import_entries(
+        box.root / "archive" / "fact-2026-10.md", category="fact", dry_run=True
+    )
+    assert len(result.imported) == 1
+    assert result.imported[0].text == "The workshop opens at nine. #routine"
+    assert result.imported[0].timestamp == "2026-10-22 09:00"

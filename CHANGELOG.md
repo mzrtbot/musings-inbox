@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-11-18
+
+### Added
+- `archive --before YYYY-MM-DD`: move entries dated before that day into `archive/` and update the index — the boundary day itself is kept, the same convention as `--since`. Archived entries are grouped by category and month into `archive/<category>-YYYY-MM.md` files (same entry-line format as the category files, with a header line when the file is first created; a second archive into the same month appends). Archived entries are removed from their category files and dropped from the index; hand-written lines and the index header are kept. `--dry-run` reports what would be archived without writing anything, and archiving nothing writes nothing — not even the `archive/` directory. After writing, the inbox is verified by read-back (index/content agreement plus every archived line present in its archive file). Library method `Inbox.archive()` returns the archived entries, the archive files written, and the dry-run flag.
+
 ## [0.2.9] - 2026-11-16
 
 ### Added

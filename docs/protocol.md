@@ -119,7 +119,7 @@ disk. Additional guards:
 ## 9. Reference implementation
 
 `src/musings_inbox/inbox.py` implements `init` / `add` / `search` / `list` /
-`stats` / `export` / `import` / `verify` / `doctor` / `backup` / `restore` with the newline, read-back, whitelist, and
+`stats` / `export` / `import` / `verify` / `doctor` / `backup` / `restore` / `archive` with the newline, read-back, whitelist, and
 traversal rules enforced in code, covered by `tests/test_inbox.py`.
 `doctor` is a read-only health self-check (trailing newlines, md5 fingerprints,
 index consistency, entry/index line formats, duplicate IDs, file permissions)
@@ -128,6 +128,13 @@ that never writes and exits 1 when any error is found.
 of md5 fingerprints; `restore` validates a backup completely (manifest,
 fingerprints, entry and index formats, index consistency) before replacing
 the inbox with it, and `--dry-run` validates without writing anything.
+`archive --before YYYY-MM-DD` moves entries dated before that day into
+`archive/<category>-YYYY-MM.md` files (same entry-line format as the
+category files, so they can be re-imported with `import --category`),
+removes them from their category files, drops them from the index, and
+verifies the result by read-back; the boundary day is kept, and
+`--dry-run` previews without writing anything. Archived files are outside
+the five live inbox files, so `doctor` / `backup` do not cover them.
 `stats` accepts `--since` / `--until` (YYYY-MM-DD, boundary days included)
 to summarize a date range, and always reports per-month counts
 (`YYYY-MM: N`) alongside the per-category counts.
