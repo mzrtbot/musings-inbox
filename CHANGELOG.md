@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-19
+
+### Added
+- This release consolidates the 0.2.2–0.2.10 batch: nine increments developed and tested one by one since v0.2.0, released on GitHub here for the first time.
+- `import`: read an exported Markdown or JSON file back in (raw category files with `--category`), keeping the original timestamps, assigning fresh IDs, skipping duplicates, with `--dry-run` preview and whole-file validation before any write.
+- `doctor`: read-only inbox health self-check (trailing newlines, md5 fingerprints, index consistency, entry/index line formats, duplicate IDs, file permissions), exiting 1 on any error.
+- `backup` / `restore`: timestamped backups (all five files plus a `manifest.json` of md5 fingerprints) and restore with full integrity checks before any write, plus `--dry-run` validation.
+- `stats --since` / `--until` date ranges (boundary days included) and per-month counts.
+- `export --format html`: a single self-contained, offline-readable HTML page (table of contents, category anchors, escaped entry text).
+- Config file support: `~/.config/musings-inbox/config.toml` (or `$XDG_CONFIG_HOME/...`, or `--config <path>`) for the default `--root` and default `--type` for `add`; CLI flags win over the config.
+- `search --regex` (whole-line match, invalid patterns named) and `--case-sensitive`, composing with the other filters and leaving unflagged search unchanged.
+- `add` with multi-line input: repeatable `--text`, `--stdin`, `--editor` (`$VISUAL` / `$EDITOR`, default `vi`), or `--file` — batch sources read one entry per blank-line-separated paragraph (`#` lines are comments, wrapped lines fold to spaces), and an empty batch writes nothing.
+- `archive --before YYYY-MM-DD`: move entries dated before that day into `archive/<category>-YYYY-MM.md` (same entry-line format, re-importable with `import --category`), remove them from their category files, drop them from the index; the boundary day is kept, `--dry-run` previews, and the archive is verified by read-back.
+- Release-hygiene tests: package `__version__` must match pyproject, the latest CHANGELOG section must carry a valid date, and the README must name the current version.
+
 ## [0.2.10] - 2026-11-18
 
 ### Added

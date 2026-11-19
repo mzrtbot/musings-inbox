@@ -743,6 +743,41 @@ def test_release_version_is_consistent():
     )
 
 
+def test_package_version_matches_pyproject():
+    """Release hygiene: musings_inbox.__version__ must match pyproject."""
+    import musings_inbox
+
+    assert musings_inbox.__version__ == _pyproject_version(), (
+        f"package version {musings_inbox.__version__!r} != "
+        f"pyproject version {_pyproject_version()!r}"
+    )
+
+
+def test_latest_changelog_section_is_dated():
+    """Release hygiene: the latest CHANGELOG section must carry a valid date."""
+    import re
+
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    sections = re.findall(r"^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})$",
+                          changelog, re.M)
+    assert sections, "no dated CHANGELOG version section found"
+    version, date_text = sections[0]
+    assert version == _pyproject_version(), (
+        f"latest CHANGELOG section is {version}, pyproject is "
+        f"{_pyproject_version()}"
+    )
+    datetime.strptime(date_text, "%Y-%m-%d")  # raises on an invalid date
+
+
+def test_readme_names_current_version():
+    """Release hygiene: the README must name the current release version."""
+    version = _pyproject_version()
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"v{version}" in readme, (
+        f"README does not mention the current version v{version}"
+    )
+
+
 SAMPLE_INBOX = REPO_ROOT / "examples" / "sample-inbox"
 
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-## Now (0.2.x)
+## Now (0.3.x)
 - CI on every push (pytest, 3 Python versions) and a demo smoke test.
 - `list` and `stats` commands for reading an inbox back without grep.
 - `export` to a single Markdown file or JSON for backup and migration.
@@ -19,9 +19,7 @@
 - `search --regex` and `--case-sensitive`.
 - `add` with multi-line input (stdin / editor) and batch append.
 - `archive`: move old entries by date into `archive/` and update the index.
-
-## Next (0.3.x)
-- Release v0.3.0.
+- Release v0.3.0 (2026-11-19): consolidates the 0.2.2–0.2.10 batch (import, doctor, backup/restore, stats ranges, HTML export, config file, regex search, multi-line add, archive) as the first GitHub release since v0.2.0.
 
 ## Later
 - Optional summarization command that compresses older entries (kept out of the dependency-free core).
