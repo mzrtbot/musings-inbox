@@ -584,6 +584,8 @@ class Inbox:
         category: str | None = None,
         on_date: str | None = None,
         tag: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[Entry]:
         """List entries, optionally filtered by category, date, and/or tag.
 
@@ -595,11 +597,22 @@ class Inbox:
         so listing is stable regardless of which category file they live in.
         Non-entry lines (headers, hand-written notes) are skipped, never
         treated as entries.
+
+        ``limit`` caps how many entries are returned (``None`` means all);
+        ``offset`` skips that many entries first, so ``limit`` + ``offset``
+        page through the filtered list. ``limit`` must be a positive
+        integer and ``offset`` a non-negative integer; pagination applies
+        after filtering and sorting, so a page is always a stable slice
+        of the filtered, chronological list.
         """
         if category is not None and category not in CATEGORIES:
             raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
         if on_date is not None:
             _validate_date(on_date)
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+            raise ValueError(f"invalid limit: {limit!r} (must be a positive integer)")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError(f"invalid offset: {offset!r} (must be a non-negative integer)")
         wanted = _normalize_tag(tag) if tag is not None else None
         categories = [category] if category is not None else list(CATEGORIES)
         entries: list[Entry] = []
@@ -619,6 +632,10 @@ class Inbox:
                     continue
                 entries.append(entry)
         entries.sort(key=lambda e: (e.timestamp, e.entry_id))
+        if offset:
+            entries = entries[offset:]
+        if limit is not None:
+            entries = entries[:limit]
         return entries
 
     def stats(self, since: str | None = None, until: str | None = None) -> Stats:
@@ -1381,6 +1398,10 @@ def main(argv: list[str] | None = None) -> int:
     p_list.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
     p_list.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")
     p_list.add_argument("--tag", dest="tag", default=None, help="filter by #tag in entry text")
+    p_list.add_argument("--limit", dest="limit", type=int, default=None,
+                        help="show at most this many entries (a positive integer)")
+    p_list.add_argument("--offset", dest="offset", type=int, default=0,
+                        help="skip this many entries first (a non-negative integer)")
     p_stats = sub.add_parser("stats", help="show per-category counts, earliest/latest entries, total characters, "
                                             "and per-month counts, optionally within a date range")
     p_stats.add_argument("--since", dest="since", default=None,
@@ -1457,12 +1478,24 @@ def main(argv: list[str] | None = None) -> int:
                                 case_sensitive=args.case_sensitive)
             print("\n".join(hits) if hits else "no matches")
         elif args.cmd == "list":
-            entries = inbox.list_entries(category=args.category, on_date=args.on_date, tag=args.tag)
+            paginated = args.limit is not None or args.offset != 0
+            if paginated:
+                total = len(inbox.list_entries(category=args.category, on_date=args.on_date,
+                                               tag=args.tag))
+            entries = inbox.list_entries(category=args.category, on_date=args.on_date, tag=args.tag,
+                                         limit=args.limit, offset=args.offset)
             if entries:
                 for entry in entries:
                     print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
             else:
                 print("no entries")
+            if paginated:
+                window = f"showing {len(entries)} of {total}"
+                if args.limit is not None:
+                    window += f" (offset {args.offset}, limit {args.limit})"
+                elif args.offset:
+                    window += f" (offset {args.offset})"
+                print(window)
         elif args.cmd == "stats":
             stats = inbox.stats(since=args.since, until=args.until)
             if args.since is not None and args.until is not None:

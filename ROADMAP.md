@@ -20,6 +20,7 @@
 - `add` with multi-line input (stdin / editor) and batch append.
 - `archive`: move old entries by date into `archive/` and update the index.
 - Release v0.3.0 (2026-11-19): consolidates the 0.2.2–0.2.10 batch (import, doctor, backup/restore, stats ranges, HTML export, config file, regex search, multi-line add, archive) as the first GitHub release since v0.2.0.
+- `list --limit` / `--offset`: page through the filtered, chronological entry list, with a `showing X of Y` footer when paging.
 
 ## Later
 - Optional summarization command that compresses older entries (kept out of the dependency-free core).

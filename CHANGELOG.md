@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-22
+
+### Added
+- `list --limit N` / `--offset N`: page through the filtered, chronological entry list (limit must be a positive integer, offset a non-negative one; a page past the end is empty, not an error). Library method `Inbox.list_entries()` takes the same `limit` / `offset` arguments, validated the same way. When either flag is given, `list` also prints a `showing X of Y` footer naming the window, so a page is never mistaken for the whole inbox.
+
 ## [0.3.0] - 2026-11-19
 
 ### Added

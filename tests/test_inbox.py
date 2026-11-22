@@ -101,6 +101,75 @@ def test_list_cli_prints_entries_and_empty(tmp_path, capsys):
     assert "20261023-01 2026-10-23 09:30 [fact] CLI-listed entry." in out
 
 
+def test_list_pagination_limit_and_offset(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    for i, text in enumerate(["First.", "Second.", "Third.", "Fourth.", "Fifth."]):
+        box.add("fact", text, now=datetime(2026, 10, 23, 9, i))
+    all_ids = ["20261023-0%d" % n for n in range(1, 6)]
+    assert [e.entry_id for e in box.list_entries()] == all_ids
+    assert [e.entry_id for e in box.list_entries(limit=2)] == all_ids[:2]
+    assert [e.entry_id for e in box.list_entries(offset=3)] == all_ids[3:]
+    assert [e.entry_id for e in box.list_entries(limit=2, offset=2)] == all_ids[2:4]
+    # A page past the end is empty, not an error.
+    assert box.list_entries(limit=2, offset=5) == []
+    assert box.list_entries(offset=99) == []
+    # Limit larger than the inbox returns everything.
+    assert [e.entry_id for e in box.list_entries(limit=99)] == all_ids
+    # Pagination applies after filtering and sorting: the second page of
+    # one category is a stable slice of that category's chronological list.
+    assert [e.entry_id for e in box.list_entries(category="fact", limit=2, offset=1)] == all_ids[1:3]
+    box.add("preference", "Other category.", now=datetime(2026, 10, 23, 9, 30))
+    assert [e.entry_id for e in box.list_entries(limit=2, offset=4)] == ["20261023-05", "20261023-06"]
+
+
+def test_list_pagination_rejects_bad_values(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "Something listable.", now=NOW)
+    for bad_limit, bad_offset in [(0, 0), (-1, 0), (2.5, 0), ("2", 0), (None, -1),
+                                  (None, 1.5), (None, "1"), (None, True), (False, 0)]:
+        try:
+            box.list_entries(limit=bad_limit, offset=bad_offset)
+        except ValueError:
+            continue
+        raise AssertionError(f"should reject {bad_limit=} {bad_offset=}")
+
+
+def test_list_cli_pagination_footer_and_errors(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    box = Inbox(tmp_path / "inbox")
+    for i, text in enumerate(["First.", "Second.", "Third."]):
+        box.add("fact", text, now=datetime(2026, 10, 23, 9, i))
+    assert main(["--root", root, "list", "--limit", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "20261023-01" in out and "20261023-02" in out
+    assert "20261023-03" not in out
+    assert "showing 2 of 3 (offset 0, limit 2)" in out
+    assert main(["--root", root, "list", "--limit", "2", "--offset", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "20261023-03" in out and "20261023-01" not in out
+    assert "showing 1 of 3 (offset 2, limit 2)" in out
+    assert main(["--root", root, "list", "--offset", "3"]) == 0
+    out = capsys.readouterr().out
+    assert "no entries" in out
+    assert "showing 0 of 3 (offset 3)" in out
+    # A page beyond the end combined with a filter reports the filtered total.
+    assert main(["--root", root, "list", "--limit", "1", "--offset", "5",
+                 "--category", "material"]) == 0
+    out = capsys.readouterr().out
+    assert "showing 0 of 0 (offset 5, limit 1)" in out
+    # Bad pagination values fail with an error, exit code 1.
+    assert main(["--root", root, "list", "--limit", "0"]) == 1
+    assert "invalid limit" in capsys.readouterr().err
+    assert main(["--root", root, "list", "--offset", "-1"]) == 1
+    assert "invalid offset" in capsys.readouterr().err
+    # Without pagination flags the output is unchanged (no footer line).
+    assert main(["--root", root, "list"]) == 0
+    out = capsys.readouterr().out
+    assert "showing" not in out
+
+
 def test_stats_counts_earliest_latest_and_total_chars(tmp_path):
     box = Inbox(tmp_path / "inbox")
     box.add("fact", "First day note.", now=datetime(2026, 10, 22, 9, 0))
