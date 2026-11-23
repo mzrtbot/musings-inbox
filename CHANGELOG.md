@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-24
+
+### Added
+- `search --until YYYY-MM-DD`: keep only entries dated on or before that day (boundary day included), pairing with `--since` to form a closed date range. Composes with `--tag` / `--category` / `--regex` / `--case-sensitive`; an inverted range (`--since` after `--until`) and invalid dates raise an error naming the problem. Library method `Inbox.search()` gains a matching `until` parameter.
+
 ## [0.3.1] - 2026-11-22
 
 ### Added

@@ -957,6 +957,7 @@ class Inbox:
         tag: str | None = None,
         category: str | None = None,
         since: str | None = None,
+        until: str | None = None,
         regex: bool = False,
         case_sensitive: bool = False,
     ) -> list[str]:
@@ -966,7 +967,9 @@ class Inbox:
         parsed tags contain the tag (case-insensitive, a leading '#' is
         accepted). ``category`` restricts the search to one category
         file. ``since`` (``YYYY-MM-DD``) keeps only entries dated on or
-        after that day — the boundary day itself is included.
+        after that day, ``until`` (``YYYY-MM-DD``) keeps only entries
+        dated on or before that day — both boundary days are included.
+        A range with ``since`` after ``until`` raises ``ValueError``.
         Whenever any filter is given, hits must be entry lines (only
         they carry a category, a date, and tags); hand-written headers
         and notes never match a filtered search.
@@ -982,8 +985,12 @@ class Inbox:
             raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
         if since is not None:
             _validate_date(since)
+        if until is not None:
+            _validate_date(until)
+        if since is not None and until is not None and since > until:
+            raise ValueError(f"invalid date range: since {since!r} is after until {until!r}")
         wanted = _normalize_tag(tag) if tag is not None else None
-        filtered = tag is not None or category is not None or since is not None
+        filtered = tag is not None or category is not None or since is not None or until is not None
         if regex:
             flags = 0 if case_sensitive else re.IGNORECASE
             try:
@@ -1017,8 +1024,11 @@ class Inbox:
                         if wanted is not None and wanted not in parse_tags(match.group(3)):
                             continue
                         # Timestamps are "YYYY-MM-DD HH:MM", so the date
-                        # part compares lexicographically with ``since``.
+                        # part compares lexicographically with ``since`` /
+                        # ``until`` (both boundary days included).
                         if since is not None and match.group(2)[:10] < since:
+                            continue
+                        if until is not None and match.group(2)[:10] > until:
                             continue
                     hits.append(f"{filename}: {ln}")
         return hits
@@ -1390,6 +1400,8 @@ def main(argv: list[str] | None = None) -> int:
                           help="only search this category")
     p_search.add_argument("--since", dest="since", default=None,
                           help="only entries on or after this date, YYYY-MM-DD")
+    p_search.add_argument("--until", dest="until", default=None,
+                          help="only entries on or before this date, YYYY-MM-DD")
     p_search.add_argument("--regex", dest="regex", action="store_true",
                           help="treat the query as a regular expression (matched against the whole line)")
     p_search.add_argument("--case-sensitive", dest="case_sensitive", action="store_true",
@@ -1474,7 +1486,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"added: {len(texts)}")
         elif args.cmd == "search":
             hits = inbox.search(args.query, tag=args.tag, category=args.category,
-                                since=args.since, regex=args.regex,
+                                since=args.since, until=args.until, regex=args.regex,
                                 case_sensitive=args.case_sensitive)
             print("\n".join(hits) if hits else "no matches")
         elif args.cmd == "list":

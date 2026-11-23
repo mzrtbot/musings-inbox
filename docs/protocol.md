@@ -78,8 +78,9 @@ header) is not a tag. Queries can filter by tag, accepting a leading `#`.
 
 - Answer **from the files**, not from parametric memory. Search all category
   files, cite entry IDs, and quote the recorded timestamp as-is.
-- Narrow a search with `--tag`, `--category`, or `--since YYYY-MM-DD`
-  (entries on or after that day); a filtered search matches entry lines only.
+- Narrow a search with `--tag`, `--category`, or `--since` / `--until`
+  `YYYY-MM-DD` (entries on or after / on or before that day, boundary
+  days included); a filtered search matches entry lines only.
 - `search --regex` treats the query as a regular expression matched against
   the whole line (an invalid pattern is an error naming the pattern);
   `--case-sensitive` makes the match exact-case. Both compose with the

@@ -615,11 +615,43 @@ def test_search_since_and_category_filters(tmp_path):
     assert len(box.search("workshop", category="fact")) == 2
 
 
+def test_search_until_pairs_with_since(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "The workshop opens at nine.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("fact", "The workshop kettle whistles. #routine", now=datetime(2026, 10, 23, 9, 0))
+    box.add("preference", "The Workshop cat naps by the stove.", now=datetime(2026, 10, 23, 8, 0))
+    box.add("experience", "The workshop roof leaked in the rain.", now=datetime(2026, 10, 24, 9, 0))
+    # --until is inclusive: the boundary day itself is kept.
+    until23 = box.search("workshop", until="2026-10-23")
+    assert len(until23) == 3
+    for entry_id in ("20261022-01", "20261023-01", "20261023-02"):
+        assert any(entry_id in ln for ln in until23)
+    assert box.search("workshop", until="2026-10-21") == []
+    # since + until form a closed range; both boundary days are kept.
+    window = box.search("workshop", since="2026-10-23", until="2026-10-23")
+    assert len(window) == 2
+    assert box.search("workshop", since="2026-10-23", until="2026-10-24") == box.search("workshop", since="2026-10-23")
+    # an inverted range is an error, not an empty result.
+    try:
+        box.search("workshop", since="2026-10-24", until="2026-10-23")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("search(since > until) should raise ValueError")
+    # until composes with the other filters.
+    assert len(box.search("workshop", until="2026-10-23", category="fact")) == 2
+    assert len(box.search("workshop", until="2026-10-22", category="fact")) == 1
+    assert len(box.search("workshop", until="2026-10-23", tag="routine")) == 1
+    assert len(box.search("workshop", until="2026-10-24", regex=True)) == 4
+
+
 def test_search_rejects_bad_category_and_since(tmp_path):
     box = Inbox(tmp_path / "inbox")
     box.add("fact", "Something searchable.", now=NOW)
     for kwargs in [dict(category="diary"), dict(since="23-10-2026"),
-                   dict(since="2026-13-01"), dict(since="2026-10-32")]:
+                   dict(since="2026-13-01"), dict(since="2026-10-32"),
+                   dict(until="23-10-2026"), dict(until="2026-02-30"),
+                   dict(since="2026-10-24", until="2026-10-23")]:
         try:
             box.search("searchable", **kwargs)
         except ValueError:
@@ -642,8 +674,20 @@ def test_search_cli_since_and_category_filters(tmp_path, capsys):
     assert "opens at nine" in out and "cat naps" not in out
     assert main(["--root", root, "search", "workshop", "--since", "2026-10-24"]) == 0
     assert capsys.readouterr().out.strip() == "no matches"
+    assert main(["--root", root, "search", "workshop", "--until", "2026-10-22"]) == 0
+    out = capsys.readouterr().out
+    assert "opens at nine" in out and "cat naps" not in out
+    assert main(["--root", root, "search", "workshop", "--since", "2026-10-22",
+                 "--until", "2026-10-22"]) == 0
+    out = capsys.readouterr().out
+    assert "opens at nine" in out and "cat naps" not in out
     assert main(["--root", root, "search", "workshop", "--since", "bad-date"]) == 1
     assert "invalid date" in capsys.readouterr().err
+    assert main(["--root", root, "search", "workshop", "--until", "bad-date"]) == 1
+    assert "invalid date" in capsys.readouterr().err
+    assert main(["--root", root, "search", "workshop", "--since", "2026-10-23",
+                 "--until", "2026-10-22"]) == 1
+    assert "invalid date range" in capsys.readouterr().err
 
 
 def test_search_regex(tmp_path):
