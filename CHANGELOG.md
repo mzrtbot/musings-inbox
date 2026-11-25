@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-25
+
+### Added
+- `doctor --fix`: repair what the health check can fix — append a missing trailing newline to any inbox file, and rebuild the index rows from the category files (rows for entries that exist are added or corrected, rows for entries that do not exist are dropped, duplicate rows collapse to one; hand-written lines and the index header are kept). `--dry-run` previews the repairs without writing anything. After fixing, `doctor` re-checks and exits 1 while any error remains; issues it cannot fix on its own (a missing file, a malformed line, duplicate entry IDs in the category files, file permissions) stay in the report. The index is rebuilt only when every file is present, so a missing category file never costs its index rows. Library method `Inbox.doctor_fix()` returns the repairs made and the fresh report.
+
 ## [0.3.2] - 2026-11-24
 
 ### Added

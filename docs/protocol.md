@@ -125,6 +125,11 @@ traversal rules enforced in code, covered by `tests/test_inbox.py`.
 `doctor` is a read-only health self-check (trailing newlines, md5 fingerprints,
 index consistency, entry/index line formats, duplicate IDs, file permissions)
 that never writes and exits 1 when any error is found.
+`doctor --fix` repairs what the check can fix — a missing trailing newline,
+and index rows rebuilt from the category files (hand-written lines and the
+header are kept) — then re-checks; `--dry-run` previews the repairs without
+writing. Issues it cannot fix on its own (a missing file, a malformed line,
+duplicate entry IDs in the files, file permissions) stay in the report.
 `backup` writes a timestamped copy of the whole inbox plus a `manifest.json`
 of md5 fingerprints; `restore` validates a backup completely (manifest,
 fingerprints, entry and index formats, index consistency) before replacing

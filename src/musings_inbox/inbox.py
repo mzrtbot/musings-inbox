@@ -232,6 +232,13 @@ class DoctorReport:
 
 
 @dataclass
+class DoctorFixResult:
+    fixed: list[str]
+    report: DoctorReport
+    dry_run: bool = False
+
+
+@dataclass
 class BackupResult:
     path: Path
     created: str
@@ -1179,6 +1186,114 @@ class Inbox:
         errors = sum(1 for issue in issues if issue.severity == "error")
         return DoctorReport(ok=errors == 0, issues=issues, fingerprints=fingerprints)
 
+    def _rebuild_index(self, dry_run: bool = False) -> tuple[int, int]:
+        """Rewrite the index rows from the category files.
+
+        Returns ``(added, removed)``: rows added (entries in the files
+        that had no identical row) and rows removed (rows naming entries
+        that are not in any file, duplicate rows, or rows whose text no
+        longer matches the entry). Non-row lines — the header, the
+        separator, hand-written notes — are kept verbatim. Malformed
+        rows (not matching the row format) are also kept: they are a
+        format error for a human to decide on, not a row to silently
+        rewrite. A duplicate entry ID in the category files is
+        ambiguous, so the first (chronological) copy supplies the row
+        and doctor keeps flagging the duplicate afterwards.
+        """
+        from collections import Counter
+
+        entries: dict[str, Entry] = {}
+        for cat in CATEGORIES:
+            p = self._file(CATEGORIES[cat])
+            for ln in p.read_text(encoding="utf-8").splitlines():
+                match = _ENTRY_LINE.match(ln)
+                if match is None:
+                    continue
+                entry_id, timestamp, text = match.groups()
+                entries.setdefault(entry_id, Entry(entry_id, cat, text, timestamp))
+        ordered = sorted(entries.values(), key=lambda e: (e.timestamp, e.entry_id))
+        rows = [
+            f"| {e.entry_id} | {e.timestamp} | {e.category} | "
+            f"{e.text[:60].replace('|', '/')} |"
+            for e in ordered
+        ]
+        index = self._file(INDEX_NAME)
+        lines = index.read_text(encoding="utf-8").splitlines()
+        kept = [ln for ln in lines if _INDEX_ROW.match(ln) is None]
+        old_rows = [ln for ln in lines if _INDEX_ROW.match(ln) is not None]
+        added = sum((Counter(rows) - Counter(old_rows)).values())
+        removed = sum((Counter(old_rows) - Counter(rows)).values())
+        if (added or removed) and not dry_run:
+            index.write_text("\n".join(kept + rows) + "\n", encoding="utf-8")
+        return added, removed
+
+    def doctor_fix(self, dry_run: bool = False) -> DoctorFixResult:
+        """Repair the issues :meth:`doctor` can fix, then re-check.
+
+        Fixable, in order:
+        1. Trailing newline — append ``\\n`` to any inbox file that
+           lacks one (at the byte level, so a non-UTF-8 file is still
+           repairable; a symlinked or missing file is skipped, doctor
+           already reports it).
+        2. Index consistency — rebuild the index rows from the
+           category files (see :meth:`_rebuild_index`).
+
+        Deliberately not fixed: a missing file is recreated by
+        ``init``, never silently; a malformed line needs a human to
+        decide what it should have said; duplicate entry IDs in the
+        category files are ambiguous (which copy is the real one?);
+        file permissions are the owner's call. Those issues stay in
+        the returned report. The index is rebuilt only when every file
+        is present — with a category file missing, rebuilding would
+        drop that file's rows, which is data loss, not a repair.
+        With ``dry_run`` nothing is written and ``fixed`` describes
+        what would be repaired. The report is always a fresh
+        :meth:`doctor` run after the fixes (or, for a dry run, of the
+        unchanged inbox).
+        """
+        fixed: list[str] = []
+        for filename in list(CATEGORIES.values()) + [INDEX_NAME]:
+            try:
+                p = self._file(filename)
+            except (ValueError, IOError):
+                continue
+            if not p.exists():
+                continue
+            data = p.read_bytes()
+            if data and not data.endswith(b"\n"):
+                if not dry_run:
+                    with p.open("ab") as fh:
+                        fh.write(b"\n")
+                fixed.append(f"trailing newline: {filename} now ends with a newline")
+        present = True
+        for filename in list(CATEGORIES.values()) + [INDEX_NAME]:
+            try:
+                p = self._file(filename)
+            except (ValueError, IOError):
+                present = False
+                break
+            if not p.exists():
+                present = False
+                break
+        if present:
+            try:
+                added, removed = self._rebuild_index(dry_run=dry_run)
+            except UnicodeDecodeError:
+                # A non-UTF-8 file is already a doctor error; the index
+                # cannot be rebuilt from unreadable content.
+                added = removed = 0
+            if added or removed:
+                parts = []
+                if added:
+                    parts.append(f"added {added} row(s)")
+                if removed:
+                    parts.append(f"removed {removed} row(s)")
+                fixed.append(
+                    "index consistency: rebuilt index from category files "
+                    f"({', '.join(parts)})"
+                )
+        return DoctorFixResult(fixed=fixed, report=self.doctor(), dry_run=dry_run)
+
     def backup(self, destination: str | Path | None = None, now: datetime | None = None) -> BackupResult:
         """Create a timestamped backup of the whole inbox.
 
@@ -1436,8 +1551,13 @@ def main(argv: list[str] | None = None) -> int:
                           help="category for Markdown category-file lines (the file has no [category] per line)")
     p_import.add_argument("--dry-run", dest="dry_run", action="store_true",
                           help="show what would be imported without writing anything")
-    sub.add_parser("doctor", help="health self-check: trailing newlines, md5 fingerprints, "
-                                  "index consistency, file permissions")
+    p_doctor = sub.add_parser("doctor", help="health self-check: trailing newlines, md5 fingerprints, "
+                                              "index consistency, file permissions")
+    p_doctor.add_argument("--fix", dest="fix", action="store_true",
+                          help="repair what doctor can fix (trailing newlines, index inconsistency), "
+                               "then re-check")
+    p_doctor.add_argument("--dry-run", dest="dry_run", action="store_true",
+                          help="with --fix, show what would be repaired without writing anything")
     p_backup = sub.add_parser("backup", help="create a timestamped backup of the whole inbox")
     p_backup.add_argument("--output", dest="output", default=None,
                           help="directory receiving the backup (default: ./backups)")
@@ -1557,7 +1677,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"imported: {len(result.imported)}")
             print(f"duplicates skipped: {result.duplicates}")
         elif args.cmd == "doctor":
-            report = inbox.doctor()
+            if args.dry_run and not args.fix:
+                raise ValueError("--dry-run only applies with --fix")
+            if args.fix:
+                result = inbox.doctor_fix(dry_run=args.dry_run)
+                verb = "would fix" if args.dry_run else "fixed"
+                if result.fixed:
+                    for fix in result.fixed:
+                        print(f"[{verb}] {fix}")
+                else:
+                    print("nothing to fix" if not args.dry_run else "nothing would be fixed")
+                report = result.report
+            else:
+                report = inbox.doctor()
             checks = ["files present", "file access", "trailing newline",
                       "entry format", "index format", "index consistency",
                       "duplicate entry ids", "file permissions"]

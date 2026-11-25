@@ -1311,6 +1311,150 @@ def test_doctor_cli(tmp_path, capsys):
     assert "OK: inbox is healthy" not in out
 
 
+def test_doctor_fix_repairs_trailing_newline(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    facts = box.root / "facts.md"
+    facts.write_bytes(facts.read_bytes().rstrip(b"\n"))
+    assert not box.doctor().ok
+    result = box.doctor_fix()
+    assert not result.dry_run
+    assert result.fixed == ["trailing newline: facts.md now ends with a newline"]
+    assert result.report.ok and result.report.issues == []
+    assert facts.read_bytes().endswith(b"\n")
+    assert box.verify()
+
+
+def test_doctor_fix_rebuilds_index_missing_row(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    index = box.root / "index.md"
+    lines = [ln for ln in index.read_text(encoding="utf-8").splitlines()
+             if "20261022-01" not in ln]
+    index.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert not box.doctor().ok
+    result = box.doctor_fix()
+    assert any(f.startswith("index consistency:") and "added 1 row(s)" in f
+               for f in result.fixed)
+    assert result.report.ok
+    assert "20261022-01" in index.read_text(encoding="utf-8")
+    assert box.verify()
+
+
+def test_doctor_fix_drops_orphan_index_row(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    index = box.root / "index.md"
+    with index.open("a", encoding="utf-8") as fh:
+        fh.write("| 20261022-99 | 2026-10-22 10:00 | fact | A row with no entry. |\n")
+    result = box.doctor_fix()
+    assert any("removed 1 row(s)" in f for f in result.fixed)
+    assert result.report.ok
+    assert "20261022-99" not in index.read_text(encoding="utf-8")
+    assert box.verify()
+
+
+def test_doctor_fix_dedupes_index_rows_and_keeps_notes(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    index = box.root / "index.md"
+    row = [ln for ln in index.read_text(encoding="utf-8").splitlines()
+           if ln.startswith("| 20261022-01")][0]
+    with index.open("a", encoding="utf-8") as fh:
+        fh.write("# a hand-written note\n")
+        fh.write(row + "\n")
+    result = box.doctor_fix()
+    text = index.read_text(encoding="utf-8")
+    assert text.count(row) == 1
+    assert "# a hand-written note" in text
+    assert result.report.ok
+    assert box.verify()
+
+
+def test_doctor_fix_dry_run_writes_nothing(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    facts = box.root / "facts.md"
+    facts.write_bytes(facts.read_bytes().rstrip(b"\n"))
+    index = box.root / "index.md"
+    lines = [ln for ln in index.read_text(encoding="utf-8").splitlines()
+             if "20261022-01" not in ln]
+    index.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    facts_before = facts.read_bytes()
+    index_before = index.read_bytes()
+    result = box.doctor_fix(dry_run=True)
+    assert result.dry_run
+    assert len(result.fixed) == 2
+    assert any(f.startswith("trailing newline:") for f in result.fixed)
+    assert any(f.startswith("index consistency:") for f in result.fixed)
+    assert not result.report.ok  # the inbox is still broken: nothing was written
+    assert facts.read_bytes() == facts_before
+    assert index.read_bytes() == index_before
+
+
+def test_doctor_fix_leaves_unfixable_issues(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    facts = box.root / "facts.md"
+    with facts.open("a", encoding="utf-8") as fh:
+        fh.write("- [20260101-99] forged\n")  # malformed entry line: not fixable
+    line = [ln for ln in facts.read_text(encoding="utf-8").splitlines()
+            if ln.startswith("- [")][0]
+    with facts.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")  # duplicate entry ID in the file: not fixable
+    result = box.doctor_fix()
+    assert result.fixed == []
+    assert not result.report.ok
+    checks = {i.check for i in result.report.issues if i.severity == "error"}
+    assert "entry format" in checks
+    assert "duplicate entry ids" in checks
+
+
+def test_doctor_fix_does_not_rebuild_index_when_a_file_is_missing(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    (box.root / "materials.md").unlink()
+    result = box.doctor_fix()
+    assert result.fixed == []
+    assert not result.report.ok
+    assert any(i.check == "files present" and "materials.md is missing" in i.message
+               for i in result.report.issues)
+    assert not (box.root / "materials.md").exists()  # --fix never recreates files
+
+
+def test_doctor_fix_healthy_inbox_is_noop(tmp_path):
+    box = _seeded_inbox(tmp_path)
+    before = box.verify()
+    result = box.doctor_fix()
+    assert result.fixed == []
+    assert result.report.ok and result.report.issues == []
+    assert box.verify() == before
+
+
+def test_doctor_fix_cli(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    root = str(tmp_path / "inbox")
+    box = _seeded_inbox(tmp_path, name="inbox")
+    facts = box.root / "facts.md"
+    facts.write_bytes(facts.read_bytes().rstrip(b"\n"))
+    index = box.root / "index.md"
+    lines = [ln for ln in index.read_text(encoding="utf-8").splitlines()
+             if "20261022-01" not in ln]
+    index.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert main(["--root", root, "doctor"]) == 1
+    assert main(["--root", root, "doctor", "--fix"]) == 0
+    out = capsys.readouterr().out
+    assert "[fixed] trailing newline: facts.md now ends with a newline" in out
+    assert "[fixed] index consistency:" in out and "added 1 row(s)" in out
+    assert "OK: inbox is healthy" in out
+    assert box.doctor().ok
+    # --dry-run previews without writing, and the exit code still reports the errors.
+    facts.write_bytes(facts.read_bytes().rstrip(b"\n"))
+    assert main(["--root", root, "doctor", "--fix", "--dry-run"]) == 1
+    out = capsys.readouterr().out
+    assert "[would fix] trailing newline: facts.md now ends with a newline" in out
+    assert not facts.read_bytes().endswith(b"\n")  # still broken: dry run wrote nothing
+    assert "doctor found 1 error(s) and 0 warning(s)" in out
+    # --dry-run without --fix is rejected, not silently ignored.
+    assert main(["--root", root, "doctor", "--dry-run"]) == 1
+    err = capsys.readouterr().err
+    assert "--dry-run only applies with --fix" in err
+
+
 def _backup_manifest(backup_dir: Path) -> dict:
     import json
 
