@@ -260,6 +260,13 @@ class ArchiveResult:
     dry_run: bool = False
 
 
+@dataclass
+class UnarchiveResult:
+    restored: list[Entry]
+    files: dict[str, Path]
+    dry_run: bool = False
+
+
 ARCHIVE_DIR = "archive"
 
 
@@ -884,12 +891,16 @@ class Inbox:
             raise IOError(f"archive file escapes the inbox root: {p}") from None
         return p
 
-    def archive(self, before: str, dry_run: bool = False) -> ArchiveResult:
+    def archive(
+        self, before: str, category: str | None = None, dry_run: bool = False
+    ) -> ArchiveResult:
         """Move entries dated before ``before`` into ``archive/``.
 
         ``before`` is ``YYYY-MM-DD``; entries dated on or after that
         day stay — the boundary day is kept, the same convention as
-        ``--since``. Archived entries are grouped by category and month
+        ``--since``. ``category`` restricts the move to one category;
+        entries of every other category stay live however old they are.
+        Archived entries are grouped by category and month
         into ``archive/<category>-YYYY-MM.md`` files (same entry-line
         format as the category files, with a header line when the file
         is first created), removed from their category files, and
@@ -904,7 +915,12 @@ class Inbox:
         its archive file.
         """
         _validate_date(before)
-        to_archive = [e for e in self.list_entries() if e.timestamp[:10] < before]
+        if category is not None and category not in CATEGORIES:
+            raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
+        to_archive = [
+            e for e in self.list_entries(category=category)
+            if e.timestamp[:10] < before
+        ]
         if not to_archive:
             return ArchiveResult(archived=[], files={}, dry_run=dry_run)
         grouped: dict[tuple[str, str], list[Entry]] = {}
@@ -957,6 +973,172 @@ class Inbox:
                     f"archive file {files[f'{cat}-{month}.md']}"
                 )
         return ArchiveResult(archived=to_archive, files=files, dry_run=False)
+
+    def _archive_files(
+        self, category: str | None = None
+    ) -> list[tuple[str, str, Path]]:
+        """Archive files in scope, as (category, month, path), sorted.
+
+        Only files named ``<category>-YYYY-MM.md`` for a known category
+        are archive files; anything else in ``archive/`` is not ours and
+        is left alone. ``category`` restricts the scan to one category.
+        A symlinked ``archive/`` directory is refused, and every file
+        goes through :meth:`_archive_file`'s symlink/escape guards.
+        """
+        archive_dir = self.root / ARCHIVE_DIR
+        if archive_dir.is_symlink():
+            raise IOError(f"refusing to follow symlink: {archive_dir}")
+        if not archive_dir.is_dir():
+            return []
+        found: list[tuple[str, str, Path]] = []
+        for p in sorted(archive_dir.iterdir()):
+            match = re.fullmatch(r"([A-Za-z]+)-(\d{4}-\d{2})\.md", p.name)
+            if match is None:
+                continue
+            cat, month = match.groups()
+            if cat not in CATEGORIES:
+                continue
+            if category is not None and cat != category:
+                continue
+            try:
+                datetime.strptime(month, "%Y-%m")
+            except ValueError:
+                continue
+            found.append((cat, month, self._archive_file(cat, month)))
+        return found
+
+    def unarchive(
+        self, category: str | None = None, dry_run: bool = False
+    ) -> UnarchiveResult:
+        """Move archived entries back into the live inbox.
+
+        The inverse of :meth:`archive`: entries are read from
+        ``archive/<category>-YYYY-MM.md`` files and restored to their
+        category files and the index with their original IDs and
+        timestamps kept (unlike ``import``, which assigns fresh IDs),
+        and their lines are removed from the archive files. An archive
+        file left holding only its header is deleted; hand-written
+        lines in an archive file are kept. ``category`` restricts the
+        restore to one category.
+
+        Every archive file in scope is validated before anything is
+        written: entry lines must be well-formed with valid timestamps
+        in the file's month, no entry ID may appear twice in the
+        archive, and no restored ID may already be live (in a category
+        file or the index) — a collision would duplicate the ID, so the
+        whole restore is refused with the IDs named and nothing is
+        written. With ``dry_run`` the same validation runs and the
+        entries that would come back are reported, but nothing is
+        written. Unarchiving nothing writes nothing. After writing,
+        the inbox is verified by read-back: the index must agree with
+        the content, every restored entry must be live, and no restored
+        line may remain in an archive file.
+        """
+        if category is not None and category not in CATEGORIES:
+            raise ValueError(f"unknown category: {category} (choose from {sorted(CATEGORIES)})")
+        errors: list[str] = []
+        restored: list[Entry] = []
+        by_file: dict[Path, list[Entry]] = {}
+        seen_ids: dict[str, str] = {}
+        for cat, month, p in self._archive_files(category):
+            for lineno, ln in enumerate(p.read_text(encoding="utf-8").splitlines(), start=1):
+                if not ln.startswith("- ["):
+                    continue
+                match = _ENTRY_LINE.match(ln)
+                if match is None:
+                    errors.append(f"{p.name}:{lineno}: malformed entry line: {ln!r}")
+                    continue
+                entry_id, timestamp, text = match.groups()
+                try:
+                    _parse_timestamp(timestamp)
+                except ValueError as exc:
+                    errors.append(f"{p.name}:{lineno}: {exc}")
+                    continue
+                if timestamp[:7] != month:
+                    errors.append(
+                        f"{p.name}:{lineno}: entry {entry_id} is dated {timestamp}, "
+                        f"outside the file's month {month}"
+                    )
+                    continue
+                if not text.strip():
+                    errors.append(f"{p.name}:{lineno}: entry text must not be empty")
+                    continue
+                if entry_id in seen_ids:
+                    errors.append(
+                        f"{p.name}:{lineno}: duplicate archived entry id {entry_id} "
+                        f"(first seen in {seen_ids[entry_id]})"
+                    )
+                    continue
+                seen_ids[entry_id] = p.name
+                entry = Entry(entry_id, cat, text, timestamp)
+                restored.append(entry)
+                by_file.setdefault(p, []).append(entry)
+        live_ids = {e.entry_id for e in self.list_entries()}
+        index = self._file(INDEX_NAME)
+        if index.exists():
+            live_ids |= set(re.findall(r"\d{8}-\d+", index.read_text(encoding="utf-8")))
+        collisions = sorted(set(seen_ids) & live_ids)
+        if collisions:
+            errors.append(
+                "entry ids already live in the inbox, restoring would duplicate them: "
+                f"{collisions}"
+            )
+        if errors:
+            raise ValueError("cannot unarchive:\n" + "\n".join(errors))
+        restored.sort(key=lambda e: (e.timestamp, e.entry_id))
+        files = {p.name: p for p in by_file}
+        if not restored or dry_run:
+            return UnarchiveResult(restored=restored, files=files, dry_run=dry_run)
+        self.init()
+        for cat in CATEGORIES:
+            entries = [e for e in restored if e.category == cat]
+            if not entries:
+                continue
+            target = self._file(CATEGORIES[cat])
+            _ensure_trailing_newline(target)
+            with target.open("a", encoding="utf-8") as fh:
+                for entry in entries:
+                    fh.write(f"- [{entry.entry_id}] {entry.timestamp} — {entry.text}\n")
+        _ensure_trailing_newline(index)
+        with index.open("a", encoding="utf-8") as fh:
+            for entry in restored:
+                summary = entry.text[:60].replace("|", "/")
+                fh.write(f"| {entry.entry_id} | {entry.timestamp} | {entry.category} | {summary} |\n")
+        restored_ids = {e.entry_id for e in restored}
+        for (cat, month, p) in self._archive_files(category):
+            if p not in by_file:
+                continue
+            kept = []
+            for ln in p.read_text(encoding="utf-8").splitlines():
+                match = _ENTRY_LINE.match(ln)
+                if match is None or match.group(1) not in restored_ids:
+                    kept.append(ln)
+            title = CATEGORIES[cat].removesuffix(".md").title()
+            if [ln for ln in kept if ln.strip()] in ([], [f"# Archived {title} — {month}"]):
+                p.unlink()
+            else:
+                p.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        # Read-back verification: the inbox must verify cleanly, every
+        # restored entry must be live, and no restored line may remain
+        # in an archive file.
+        self.verify()
+        live = {e.entry_id for e in self.list_entries()}
+        missing = [e.entry_id for e in restored if e.entry_id not in live]
+        if missing:
+            raise IOError(f"read-back failed: entries {missing} not live after unarchive")
+        for p in files.values():
+            if not p.exists():
+                continue
+            text = p.read_text(encoding="utf-8")
+            remaining = [
+                e.entry_id for e in by_file[p]
+                if f"- [{e.entry_id}] {e.timestamp} — {e.text}" in text
+            ]
+            if remaining:
+                raise IOError(
+                    f"read-back failed: entries {remaining} still in archive file {p}"
+                )
+        return UnarchiveResult(restored=restored, files=files, dry_run=False)
 
     def search(
         self,
@@ -1570,8 +1752,16 @@ def main(argv: list[str] | None = None) -> int:
     p_archive.add_argument("--before", dest="before", required=True,
                            help="archive entries dated before this date, YYYY-MM-DD "
                                 "(the day itself is kept)")
+    p_archive.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES),
+                           help="only archive this category")
     p_archive.add_argument("--dry-run", dest="dry_run", action="store_true",
                            help="show what would be archived without writing anything")
+    p_unarchive = sub.add_parser("unarchive", help="move archived entries back into the inbox, "
+                                                    "keeping their original IDs and timestamps")
+    p_unarchive.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES),
+                             help="only restore this category")
+    p_unarchive.add_argument("--dry-run", dest="dry_run", action="store_true",
+                             help="show what would be restored without writing anything")
     sub.add_parser("verify")
     args = ap.parse_args(argv)
     try:
@@ -1726,7 +1916,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
             print(f"restored: {len(result.restored)}")
         elif args.cmd == "archive":
-            result = inbox.archive(args.before, dry_run=args.dry_run)
+            result = inbox.archive(args.before, category=args.category, dry_run=args.dry_run)
             if result.dry_run:
                 print("dry run: no changes written")
             if not result.archived:
@@ -1736,6 +1926,17 @@ def main(argv: list[str] | None = None) -> int:
             for name in sorted(result.files):
                 print(f"archive file: {result.files[name]}")
             print(f"archived: {len(result.archived)}")
+        elif args.cmd == "unarchive":
+            result = inbox.unarchive(category=args.category, dry_run=args.dry_run)
+            if result.dry_run:
+                print("dry run: no changes written")
+            if not result.restored:
+                print("nothing to unarchive")
+            for entry in result.restored:
+                print(f"{entry.entry_id} {entry.timestamp} [{entry.category}] {entry.text}")
+            for name in sorted(result.files):
+                print(f"archive file: {result.files[name]}")
+            print(f"unarchived: {len(result.restored)}")
         elif args.cmd == "verify":
             for name, digest in inbox.verify().items():
                 print(f"{name} {digest}")

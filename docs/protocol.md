@@ -120,7 +120,7 @@ disk. Additional guards:
 ## 9. Reference implementation
 
 `src/musings_inbox/inbox.py` implements `init` / `add` / `search` / `list` /
-`stats` / `export` / `import` / `verify` / `doctor` / `backup` / `restore` / `archive` with the newline, read-back, whitelist, and
+`stats` / `export` / `import` / `verify` / `doctor` / `backup` / `restore` / `archive` / `unarchive` with the newline, read-back, whitelist, and
 traversal rules enforced in code, covered by `tests/test_inbox.py`.
 `doctor` is a read-only health self-check (trailing newlines, md5 fingerprints,
 index consistency, entry/index line formats, duplicate IDs, file permissions)
@@ -138,8 +138,16 @@ the inbox with it, and `--dry-run` validates without writing anything.
 `archive/<category>-YYYY-MM.md` files (same entry-line format as the
 category files, so they can be re-imported with `import --category`),
 removes them from their category files, drops them from the index, and
-verifies the result by read-back; the boundary day is kept, and
-`--dry-run` previews without writing anything. Archived files are outside
+verifies the result by read-back; the boundary day is kept, `--category`
+restricts the move to one category, and `--dry-run` previews without
+writing anything. `unarchive` is the inverse: archived entries return to
+their category files and the index with their original IDs and timestamps
+kept, their lines leave the archive files (a file left holding only its
+header is deleted; hand-written lines are kept), `--category` restricts
+the restore, and every archive file in scope is validated before any
+write — a malformed line, an entry dated outside its file's month, a
+duplicate archived ID, or an ID already live refuses the whole restore.
+Archived files are outside
 the five live inbox files, so `doctor` / `backup` do not cover them.
 `stats` accepts `--since` / `--until` (YYYY-MM-DD, boundary days included)
 to summarize a date range, and always reports per-month counts

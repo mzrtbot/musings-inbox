@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-27
+
+### Added
+- `archive --category <category>`: restrict archiving to one category — entries of every other category stay live however old they are. Library method `Inbox.archive()` gains a matching `category` parameter.
+- `unarchive`: move archived entries back into the live inbox, the inverse of `archive`. Entries return to their category files and the index with their original IDs and timestamps kept (unlike `import`, which assigns fresh IDs), and their lines are removed from the archive files; an archive file left holding only its header is deleted, hand-written lines in an archive file are kept. `--category` restricts the restore to one category, and `--dry-run` validates and previews without writing anything. Every archive file in scope is validated before any write — malformed entry lines, invalid timestamps, entries dated outside their file's month, duplicate archived IDs, and IDs that are already live all refuse the whole restore with the problem named and nothing written. After writing, the inbox is verified by read-back. Library method `Inbox.unarchive()` returns the restored entries, the archive files touched, and the dry-run flag.
+
 ## [0.3.3] - 2026-11-25
 
 ### Added

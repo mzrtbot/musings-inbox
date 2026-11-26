@@ -2258,3 +2258,220 @@ def test_archived_file_can_be_reimported(tmp_path):
     assert len(result.imported) == 1
     assert result.imported[0].text == "The workshop opens at nine. #routine"
     assert result.imported[0].timestamp == "2026-10-22 09:00"
+
+
+def test_archive_category_filter(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "October fact.", now=datetime(2026, 10, 20, 9, 0))
+    box.add("preference", "October preference.", now=datetime(2026, 10, 21, 9, 0))
+    result = box.archive("2026-11-01", category="fact")
+    assert [e.text for e in result.archived] == ["October fact."]
+    assert sorted(result.files) == ["fact-2026-10.md"]
+    # The preference is just as old, but the filter keeps it live.
+    assert [e.text for e in box.list_entries()] == ["October preference."]
+    assert not (box.root / "archive" / "preference-2026-10.md").exists()
+    assert box.verify()
+
+
+def test_archive_rejects_unknown_category(tmp_path):
+    import pytest
+
+    box = _seeded_inbox(tmp_path, name="inbox")
+    with pytest.raises(ValueError):
+        box.archive("2026-10-23", category="diary")
+    assert not (box.root / "archive").exists()
+    assert len(box.list_entries()) == 3
+
+
+def test_archive_cli_category(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "October fact.", now=datetime(2026, 10, 20, 9, 0))
+    box.add("preference", "October preference.", now=datetime(2026, 10, 21, 9, 0))
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "archive", "--before", "2026-11-01",
+                 "--category", "preference"]) == 0
+    out = capsys.readouterr().out
+    assert "archived: 1" in out and "preference-2026-10.md" in out
+    assert [e.text for e in Inbox(tmp_path / "inbox").list_entries()] == ["October fact."]
+
+
+def test_unarchive_restores_entries_with_original_ids(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    box.archive("2026-10-24")
+    assert box.list_entries() == []
+    result = box.unarchive()
+    assert not result.dry_run
+    assert [e.entry_id for e in result.restored] == [
+        "20261022-01", "20261023-01", "20261023-02",
+    ]
+    assert sorted(result.files) == [
+        "experience-2026-10.md", "fact-2026-10.md", "preference-2026-10.md",
+    ]
+    # Original IDs and timestamps are back, in the files and the index.
+    assert [e.entry_id for e in box.list_entries()] == [
+        "20261022-01", "20261023-01", "20261023-02",
+    ]
+    assert "| 20261022-01 | 2026-10-22 09:00 | fact |" in (
+        box.root / "index.md").read_text(encoding="utf-8")
+    # Archive files left holding only their header are removed.
+    assert list((box.root / "archive").iterdir()) == []
+    assert box.verify()
+
+
+def test_unarchive_category_filter(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    box.archive("2026-10-24")
+    result = box.unarchive(category="fact")
+    assert [e.entry_id for e in result.restored] == ["20261022-01"]
+    assert [e.entry_id for e in box.list_entries()] == ["20261022-01"]
+    # The other categories stay archived, files intact.
+    assert (box.root / "archive" / "preference-2026-10.md").exists()
+    assert (box.root / "archive" / "experience-2026-10.md").exists()
+    assert not (box.root / "archive" / "fact-2026-10.md").exists()
+    assert box.verify()
+
+
+def test_unarchive_dry_run_writes_nothing(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    box.archive("2026-10-23")
+    before = {name: (box.root / name).read_bytes() for name in
+              ("facts.md", "index.md", "archive/fact-2026-10.md")}
+    result = box.unarchive(dry_run=True)
+    assert result.dry_run
+    assert [e.entry_id for e in result.restored] == ["20261022-01"]
+    assert result.files == {"fact-2026-10.md": box.root / "archive" / "fact-2026-10.md"}
+    assert [e.entry_id for e in box.list_entries()] == ["20261023-01", "20261023-02"]
+    for name, data in before.items():
+        assert (box.root / name).read_bytes() == data
+
+
+def test_unarchive_nothing_writes_nothing(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    result = box.unarchive()
+    assert result.restored == [] and result.files == {}
+    assert not (box.root / "archive").exists()
+    assert len(box.list_entries()) == 3
+
+
+def test_unarchive_on_uninitialized_inbox_writes_nothing(tmp_path):
+    box = Inbox(tmp_path / "inbox")
+    result = box.unarchive()
+    assert result.restored == []
+    assert not (tmp_path / "inbox").exists()
+
+
+def test_unarchive_keeps_handwritten_archive_lines(tmp_path):
+    box = _seeded_inbox(tmp_path, name="inbox")
+    box.archive("2026-10-23")
+    archive_file = box.root / "archive" / "fact-2026-10.md"
+    archive_file.write_text(
+        archive_file.read_text(encoding="utf-8") + "A hand-written note.\n",
+        encoding="utf-8",
+    )
+    box.unarchive()
+    # The entry line is gone, but the note keeps the file alive.
+    assert archive_file.read_text(encoding="utf-8").splitlines() == [
+        "# Archived Facts — 2026-10", "A hand-written note.",
+    ]
+    assert [e.entry_id for e in box.list_entries()] == [
+        "20261022-01", "20261023-01", "20261023-02",
+    ]
+
+
+def test_unarchive_refuses_live_id_collision(tmp_path):
+    import pytest
+
+    box = _seeded_inbox(tmp_path, name="inbox")
+    box.archive("2026-10-23")
+    # Re-importing the archive file assigns a fresh ID, but a hand-copied
+    # line brings the archived ID back live: unarchive must refuse.
+    facts = box.root / "facts.md"
+    facts.write_text(
+        facts.read_text(encoding="utf-8")
+        + "- [20261022-01] 2026-10-22 09:00 — The workshop opens at nine. #routine\n",
+        encoding="utf-8",
+    )
+    index = box.root / "index.md"
+    index.write_text(
+        index.read_text(encoding="utf-8")
+        + "| 20261022-01 | 2026-10-22 09:00 | fact | The workshop opens at nine. #routine |\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="20261022-01"):
+        box.unarchive()
+    # Nothing moved: the archive file still holds its entry.
+    assert "20261022-01" in (box.root / "archive" / "fact-2026-10.md").read_text(
+        encoding="utf-8")
+
+
+def test_unarchive_refuses_malformed_archive_line(tmp_path):
+    import pytest
+
+    box = _seeded_inbox(tmp_path, name="inbox")
+    box.archive("2026-10-23")
+    archive_file = box.root / "archive" / "fact-2026-10.md"
+    archive_file.write_text(
+        archive_file.read_text(encoding="utf-8") + "- [20261022-02] not a timestamp\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="malformed entry line"):
+        box.unarchive()
+    assert [e.entry_id for e in box.list_entries()] == ["20261023-01", "20261023-02"]
+
+
+def test_unarchive_refuses_entry_outside_file_month(tmp_path):
+    import pytest
+
+    box = _seeded_inbox(tmp_path, name="inbox")
+    box.archive("2026-10-23")
+    archive_file = box.root / "archive" / "fact-2026-10.md"
+    archive_file.write_text(
+        archive_file.read_text(encoding="utf-8")
+        + "- [20261105-01] 2026-11-05 09:00 — A November line in an October file.\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="outside the file's month"):
+        box.unarchive()
+    assert [e.entry_id for e in box.list_entries()] == ["20261023-01", "20261023-02"]
+
+
+def test_unarchive_rejects_unknown_category(tmp_path):
+    import pytest
+
+    box = _seeded_inbox(tmp_path, name="inbox")
+    box.archive("2026-10-23")
+    with pytest.raises(ValueError):
+        box.unarchive(category="diary")
+    assert (box.root / "archive" / "fact-2026-10.md").exists()
+
+
+def test_unarchive_cli(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    _seeded_inbox(tmp_path, name="inbox")
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "archive", "--before", "2026-10-23"]) == 0
+    capsys.readouterr()
+    assert main(["--root", root, "unarchive"]) == 0
+    out = capsys.readouterr().out
+    assert "20261022-01 2026-10-22 09:00 [fact] The workshop opens at nine. #routine" in out
+    assert "unarchived: 1" in out
+    assert len(Inbox(tmp_path / "inbox").list_entries()) == 3
+    assert Inbox(tmp_path / "inbox").verify()
+
+
+def test_unarchive_cli_dry_run(tmp_path, capsys):
+    from musings_inbox.inbox import main
+
+    _seeded_inbox(tmp_path, name="inbox")
+    root = str(tmp_path / "inbox")
+    assert main(["--root", root, "archive", "--before", "2026-10-23"]) == 0
+    capsys.readouterr()
+    assert main(["--root", root, "unarchive", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "dry run: no changes written" in out
+    assert "unarchived: 1" in out
+    assert len(Inbox(tmp_path / "inbox").list_entries()) == 2
+    assert (tmp_path / "inbox" / "archive" / "fact-2026-10.md").exists()

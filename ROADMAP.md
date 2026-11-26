@@ -22,6 +22,7 @@
 - Release v0.3.0 (2026-11-19): consolidates the 0.2.2–0.2.10 batch (import, doctor, backup/restore, stats ranges, HTML export, config file, regex search, multi-line add, archive) as the first GitHub release since v0.2.0.
 - `list --limit` / `--offset`: page through the filtered, chronological entry list, with a `showing X of Y` footer when paging.
 - `doctor --fix`: repair what the health check can fix (trailing newlines, index inconsistency), with `--dry-run` preview; unfixable issues stay in the report.
+- `archive --category` (archive one category only) and `unarchive`: move archived entries back with original IDs and timestamps kept, validated whole before any write, with `--category` / `--dry-run`.
 
 ## Later
 - Optional summarization command that compresses older entries (kept out of the dependency-free core).
