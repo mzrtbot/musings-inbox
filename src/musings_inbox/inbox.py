@@ -7,8 +7,10 @@ check, and verified by read-back + fingerprint. No database, no cloud lock-in.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -702,24 +704,36 @@ class Inbox:
         category: str | None = None,
         on_date: str | None = None,
     ) -> str:
-        """Export the inbox as one Markdown document, JSON array, or HTML page.
+        """Export the inbox as Markdown, JSON, HTML, or CSV.
 
-        ``format`` is ``markdown`` (default), ``json``, or ``html``. The same
-        ``category`` / ``on_date`` filters as :meth:`list_entries` apply,
-        so callers get the same validation and chronological order.
-        Markdown is one document with a header, a total line, and one
-        ``- [ID] timestamp [category] text`` line per entry; JSON is a
-        list of ``entry_id`` / ``category`` / ``text`` / ``timestamp``
-        objects; HTML is one self-contained offline-readable page with a
-        table of contents, one anchored section per category, and every
-        entry grouped under its category (inline styles only, no external
-        resources, entry text HTML-escaped). An empty inbox exports as a
-        Markdown header with ``no entries``, as ``[]``, or as an HTML page
-        with ``no entries`` — never as an error.
+        ``format`` is ``markdown`` (default), ``json``, ``html``, or
+        ``csv``. The same ``category`` / ``on_date`` filters as
+        :meth:`list_entries` apply, so callers get the same validation
+        and chronological order. Markdown is one document with a header,
+        a total line, and one ``- [ID] timestamp [category] text`` line
+        per entry; JSON is a list of ``entry_id`` / ``category`` /
+        ``text`` / ``timestamp`` objects; HTML is one self-contained
+        offline-readable page with a table of contents, one anchored
+        section per category, and every entry grouped under its category
+        (inline styles only, no external resources, entry text
+        HTML-escaped); CSV is a header row
+        (``entry_id,category,timestamp,text``) plus one row per entry,
+        written with the standard library ``csv`` module so commas,
+        quotes, and other special characters in entry text are quoted
+        correctly. An empty inbox exports as a Markdown header with
+        ``no entries``, as ``[]``, as an HTML page with ``no entries``,
+        or as a CSV header row alone — never as an error.
         """
-        if format not in ("markdown", "json", "html"):
-            raise ValueError(f"unknown export format: {format!r} (choose from markdown, json, html)")
+        if format not in ("markdown", "json", "html", "csv"):
+            raise ValueError(f"unknown export format: {format!r} (choose from markdown, json, html, csv)")
         entries = self.list_entries(category=category, on_date=on_date)
+        if format == "csv":
+            buffer = io.StringIO()
+            writer = csv.writer(buffer, lineterminator="\n")
+            writer.writerow(["entry_id", "category", "timestamp", "text"])
+            for e in entries:
+                writer.writerow([e.entry_id, e.category, e.timestamp, e.text])
+            return buffer.getvalue()
         if format == "html":
             by_category: dict[str, list[Entry]] = {}
             for entry in entries:
@@ -1717,8 +1731,8 @@ def main(argv: list[str] | None = None) -> int:
                          help="only entries on or after this date, YYYY-MM-DD")
     p_stats.add_argument("--until", dest="until", default=None,
                          help="only entries on or before this date, YYYY-MM-DD")
-    p_export = sub.add_parser("export", help="export the inbox as one Markdown document, JSON array, or HTML page")
-    p_export.add_argument("--format", dest="format", default="markdown", choices=["markdown", "json", "html"],
+    p_export = sub.add_parser("export", help="export the inbox as Markdown, JSON, HTML, or CSV")
+    p_export.add_argument("--format", dest="format", default="markdown", choices=["markdown", "json", "html", "csv"],
                           help="output format (default: markdown)")
     p_export.add_argument("--category", dest="category", default=None, choices=sorted(CATEGORIES))
     p_export.add_argument("--date", dest="on_date", default=None, help="filter by date, YYYY-MM-DD")

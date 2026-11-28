@@ -405,6 +405,62 @@ def test_export_html_empty_inbox(tmp_path):
     assert "<script" not in doc
 
 
+def test_export_csv_header_quoting_order_and_filters(tmp_path):
+    import csv
+    import io
+
+    box = Inbox(tmp_path / "inbox")
+    box.add("fact", "First day note.", now=datetime(2026, 10, 22, 9, 0))
+    box.add("fact", 'Tea, "green", at nine.', now=datetime(2026, 10, 23, 9, 0))
+    box.add("preference", "Second day preference.", now=datetime(2026, 10, 23, 8, 0))
+    doc = box.export(format="csv")
+    assert doc.startswith("entry_id,category,timestamp,text\n")
+    # Commas and quotes in entry text are quoted per RFC 4180.
+    assert '"Tea, ""green"", at nine."' in doc
+    reader = csv.DictReader(io.StringIO(doc))
+    assert reader.fieldnames == ["entry_id", "category", "timestamp", "text"]
+    rows = list(reader)
+    # Chronological, not file order: the 08:00 preference comes second.
+    assert rows == [
+        {"entry_id": "20261022-01", "category": "fact",
+         "timestamp": "2026-10-22 09:00", "text": "First day note."},
+        {"entry_id": "20261023-02", "category": "preference",
+         "timestamp": "2026-10-23 08:00", "text": "Second day preference."},
+        {"entry_id": "20261023-01", "category": "fact",
+         "timestamp": "2026-10-23 09:00", "text": 'Tea, "green", at nine.'},
+    ]
+    day23 = list(csv.DictReader(io.StringIO(
+        box.export(format="csv", category="fact", on_date="2026-10-23"))))
+    assert day23 == [
+        {"entry_id": "20261023-01", "category": "fact",
+         "timestamp": "2026-10-23 09:00", "text": 'Tea, "green", at nine.'},
+    ]
+
+
+def test_export_csv_empty_inbox_and_cli(tmp_path, capsys):
+    import csv
+    import io
+
+    from musings_inbox.inbox import main
+
+    box = Inbox(tmp_path / "inbox")
+    assert box.export(format="csv") == "entry_id,category,timestamp,text\n"
+    root = str(tmp_path / "inbox")
+    box.add("fact", "CLI-exported entry.", now=NOW)
+    assert main(["--root", root, "export", "--format", "csv"]) == 0
+    rows = list(csv.DictReader(io.StringIO(capsys.readouterr().out)))
+    assert rows == [
+        {"entry_id": "20261023-01", "category": "fact",
+         "timestamp": "2026-10-23 09:30", "text": "CLI-exported entry."},
+    ]
+    csv_file = tmp_path / "export.csv"
+    assert main(["--root", root, "export", "--format", "csv",
+                 "--output", str(csv_file)]) == 0
+    assert "exported:" in capsys.readouterr().out
+    assert csv_file.read_text(encoding="utf-8").startswith(
+        "entry_id,category,timestamp,text\n")
+
+
 def test_export_cli_stdout_and_output_file(tmp_path, capsys):
     import json
 

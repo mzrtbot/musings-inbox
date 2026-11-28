@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/), versions follow 
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-28
+
+### Added
+- `export --format csv`: export the inbox as CSV with a header row (`entry_id,category,timestamp,text`) and one row per entry in chronological order, written with the standard library `csv` module so commas, quotes, and other special characters in entry text are quoted correctly. The same `--category` / `--date` filters as the other export formats apply; an empty inbox exports as the header row alone. Library method `Inbox.export(format="csv")` returns the CSV text as a string.
+
 ## [0.3.4] - 2026-11-27
 
 ### Added

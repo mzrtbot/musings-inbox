@@ -23,6 +23,7 @@
 - `list --limit` / `--offset`: page through the filtered, chronological entry list, with a `showing X of Y` footer when paging.
 - `doctor --fix`: repair what the health check can fix (trailing newlines, index inconsistency), with `--dry-run` preview; unfixable issues stay in the report.
 - `archive --category` (archive one category only) and `unarchive`: move archived entries back with original IDs and timestamps kept, validated whole before any write, with `--category` / `--dry-run`.
+- `export --format csv`: header row plus one row per entry (`entry_id,category,timestamp,text`), standard CSV quoting, for spreadsheets and analysis tools.
 
 ## Later
 - Optional summarization command that compresses older entries (kept out of the dependency-free core).
